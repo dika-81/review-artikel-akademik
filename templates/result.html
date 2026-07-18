@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hasil Revisi Artikel</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="shell result-shell">
+      <header class="result-header">
+        <div>
+          <p class="eyebrow">Hasil Revisi Artikel</p>
+          <h1>{{ filename }}</h1>
+          <p class="lead">Setiap tahap menyimpan revisi final yang ringkas dan siap digunakan.</p>
+
+          <div class="review-actions">
+            {% if review_complete %}
+              <a class="secondary-button download-button" href="{{ url_for('download_review', output_name=output_name) }}">
+                Unduh Hasil Revisi
+              </a>
+            {% else %}
+              <button type="button" disabled aria-disabled="true">
+                Selesaikan semua tahap untuk mengunduh
+              </button>
+            {% endif %}
+            <form
+              action="{{ url_for('delete_review', output_name=output_name) }}"
+              method="post"
+              onsubmit="return confirm('Hapus hasil revisi, PDF, dan file artikel terkait?');"
+            >
+              <button type="submit" class="danger-button">Hapus</button>
+            </form>
+          </div>
+        </div>
+
+        <aside class="workflow result-workflow" aria-label="Workflow revisi artikel">
+          <div class="workflow-heading">
+            <p class="eyebrow">Alur Revisi</p>
+            <h2>Revisi Artikel Bertahap</h2>
+          </div>
+
+          <div class="workflow-steps">
+            {% for step in workflow_steps %}
+              <article class="workflow-step {% if step.complete %}is-complete{% elif step.unlocked %}is-active{% else %}is-locked{% endif %}">
+                <div class="workflow-icon" aria-hidden="true">{{ step.number }}</div>
+                <div class="workflow-content">
+                  <p class="workflow-title">{{ step.label }}</p>
+                  <p class="workflow-status">{{ step.status }}</p>
+
+                  {% if step.unlocked and not step.complete %}
+                    <form action="{{ url_for(step.endpoint) }}" method="post" class="workflow-form">
+                      <input type="hidden" name="filename" value="{{ filename }}">
+                      <input type="hidden" name="output_name" value="{{ output_name }}">
+                      <button type="submit" class="workflow-button">{{ step.label }}</button>
+                    </form>
+                  {% elif step.complete %}
+                    <button type="button" class="workflow-button is-complete" disabled>Sudah selesai</button>
+                  {% else %}
+                    <button type="button" class="workflow-button is-locked" disabled>Terkunci</button>
+                  {% endif %}
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+
+          <a class="secondary-button" href="{{ url_for('index') }}">Revisi artikel lain</a>
+        </aside>
+      </header>
+
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          <div class="alert result-alert">
+            {% for message in messages %}
+              <p>{{ message }}</p>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      {% if not result.get("judul") %}
+        <section class="panel result-section">
+          <h2>Artikel berhasil diunggah</h2>
+          <p>Klik tombol Judul untuk memulai revisi bertahap.</p>
+        </section>
+      {% endif %}
+
+      {% if result.get("judul") %}
+        <section class="methodology-block">
+          <div class="methodology-heading"><p class="eyebrow">Tahap 1</p><h1>Judul</h1></div>
+          <div class="results">
+            <section class="panel result-section">
+              <h2>Judul Awal</h2>
+              <p>{{ result["judul"].get("judul_awal", "") }}</p>
+            </section>
+            <section class="panel result-section">
+              <h2>Alternatif Judul</h2>
+              <ul>{% for item in result["judul"].get("alternatif_judul", []) %}<li>{{ item }}</li>{% endfor %}</ul>
+            </section>
+            <section class="panel result-section final-revision">
+              <h2>Judul Rekomendasi</h2>
+              <p>{{ result["judul"].get("judul_rekomendasi", "") }}</p>
+            </section>
+          </div>
+        </section>
+      {% endif %}
+
+      {% set revision_sections = [
+        ("abstrak", "Tahap 2", "Abstrak Revisi", "abstrak_revisi"),
+        ("pendahuluan", "Tahap 3", "Pendahuluan Revisi", "pendahuluan_revisi"),
+        ("metodologi", "Tahap 4", "Metodologi Revisi", "metodologi_revisi"),
+        ("hasil_pembahasan", "Tahap 5", "Hasil dan Pembahasan Revisi", "hasil_pembahasan_revisi"),
+        ("kesimpulan", "Tahap 6", "Kesimpulan Revisi", "kesimpulan_revisi")
+      ] %}
+      {% for result_key, stage, title, field in revision_sections %}
+        {% if result.get(result_key) %}
+          <section class="methodology-block">
+            <div class="methodology-heading"><p class="eyebrow">{{ stage }}</p><h1>{{ title }}</h1></div>
+            <section class="panel result-section final-revision">
+              <p>{{ result[result_key].get(field, "") }}</p>
+            </section>
+          </section>
+        {% endif %}
+      {% endfor %}
+
+      {% if result.get("sitasi_apa") %}
+        {% set citation = result["sitasi_apa"] %}
+        <section class="methodology-block">
+          <div class="methodology-heading"><p class="eyebrow">Tahap 7</p><h1>Sitasi dan APA 7</h1></div>
+          <div class="results">
+            {% for key, title in [
+              ("sitasi_tanpa_referensi", "Sitasi Tanpa Referensi"),
+              ("referensi_tidak_disitasi", "Referensi Tidak Disitasi"),
+              ("referensi_bermasalah", "Referensi Bermasalah")
+            ] %}
+              <section class="panel result-section">
+                <h2>{{ title }}</h2>
+                {% set value = citation.get(key, []) %}
+                {% if value %}
+                  <ul>
+                    {% for item in value %}
+                      <li>
+                        {% if item is mapping %}
+                          {% for item_key, item_value in item.items() %}
+                            <strong>{{ item_key|replace("_", " ")|title }}:</strong> {{ item_value }}{% if not loop.last %}<br>{% endif %}
+                          {% endfor %}
+                        {% else %}
+                          {{ item }}
+                        {% endif %}
+                      </li>
+                    {% endfor %}
+                  </ul>
+                {% else %}
+                  <p>Tidak ada masalah yang terdeteksi.</p>
+                {% endif %}
+              </section>
+            {% endfor %}
+            <section class="panel result-section final-revision">
+              <h2>Catatan Akhir Sitasi</h2>
+              <p>{{ citation.get("catatan_akhir_sitasi", "") }}</p>
+            </section>
+          </div>
+        </section>
+      {% endif %}
+
+      {% if result.get("referensi_tambahan") %}
+        {% set references = result["referensi_tambahan"] %}
+        {% set selected_dois = references.get("referensi_dipilih", []) | map(attribute="doi") | list %}
+        <section class="methodology-block">
+          <div class="methodology-heading">
+            <p class="eyebrow">Tahap 8</p>
+            <h1>Rekomendasi Referensi Tambahan</h1>
+            <p class="lead">{{ references.get("catatan_pencarian", "") }}</p>
+          </div>
+
+          {% for category, category_title in [
+            ("1", "Referensi yang Sangat Relevan dengan Topik"),
+            ("2", "Referensi yang Sangat Relevan dengan Metodologi"),
+            ("3", "Referensi Pendukung Teori dan Pembahasan")
+          ] %}
+            <section class="reference-category">
+              <h2>{{ category_title }}</h2>
+              <div class="reference-grid">
+                {% for reference in references.get("rekomendasi", []) if reference.get("kategori") == category %}
+                  <article class="panel reference-card">
+                    <h3>{{ reference.get("judul", "") }}</h3>
+                    <p><strong>Penulis:</strong> {{ reference.get("penulis", "") }}</p>
+                    <p><strong>Tahun:</strong> {{ reference.get("tahun", "") }}</p>
+                    <p><strong>Jurnal:</strong> {{ reference.get("jurnal", "") }}</p>
+                    <p><strong>Quartile/SINTA:</strong> {{ reference.get("quartile_atau_sinta", "") }}</p>
+                    <p>
+                      <strong>DOI:</strong>
+                      <a href="https://doi.org/{{ reference.get('doi', '') }}" target="_blank" rel="noopener">
+                        {{ reference.get("doi", "") }}
+                      </a>
+                    </p>
+                    <p><strong>Alasan relevan:</strong> {{ reference.get("alasan_relevan", "") }}</p>
+                    <p class="apa-reference"><strong>APA 7:</strong> {{ reference.get("apa_7", "") }}</p>
+
+                    {% if reference.get("doi") in selected_dois %}
+                      <button type="button" disabled>Sudah Ditambahkan</button>
+                    {% else %}
+                      <form action="{{ url_for('add_recommended_reference') }}" method="post">
+                        <input type="hidden" name="filename" value="{{ filename }}">
+                        <input type="hidden" name="output_name" value="{{ output_name }}">
+                        <input type="hidden" name="doi" value="{{ reference.get('doi', '') }}">
+                        <button type="submit">Tambahkan ke Daftar Pustaka</button>
+                      </form>
+                    {% endif %}
+                  </article>
+                {% else %}
+                  <p>Belum ada referensi terverifikasi dalam kategori ini.</p>
+                {% endfor %}
+              </div>
+            </section>
+          {% endfor %}
+
+          {% if references.get("referensi_dipilih") %}
+            <section class="panel result-section final-revision">
+              <h2>Referensi Tambahan Terpilih</h2>
+              <ol>
+                {% for reference in references.get("referensi_dipilih", []) %}
+                  <li>{{ reference.get("apa_7", "") }}</li>
+                {% endfor %}
+              </ol>
+            </section>
+          {% endif %}
+        </section>
+      {% endif %}
+    </main>
+  </body>
+</html>

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Reviu Artikel Ilmiah AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel upload-panel">
+        <div>
+          <p class="eyebrow">Reviewer Artikel Ilmiah</p>
+          <h1>AI Academic Review Assistant</h1>
+          <h4>Property of PGSD UPI Serang</h4>
+          <p class="lead">
+            Evaluasi kualitas artikel ilmiah Anda secara komprehensif melalui analisis struktur,
+            metodologi, konsistensi, referensi, kontribusi ilmiah, dan kesiapan publikasi. Sistem
+            dirancang untuk membantu penulis meningkatkan mutu naskah sesuai standar akademik dan
+            etika publikasi, bukan untuk menghasilkan atau memfabrikasi karya ilmiah secara otomatis.
+          </p>
+          <p class="lead note">
+            AI berperan sebagai asisten reviewer dan editor akademik yang memberikan masukan,
+            identifikasi kelemahan, serta rekomendasi perbaikan. Seluruh isi, data penelitian,
+            interpretasi hasil, dan tanggung jawab ilmiah tetap berada pada penulis.
+          </p>
+        </div>
+
+        {% with messages = get_flashed_messages() %}
+          {% if openai_warning %}
+            <div class="alert">
+              <p>{{ openai_warning }}</p>
+            </div>
+          {% endif %}
+
+          {% if messages %}
+            <div class="alert">
+              {% for message in messages %}
+                <p>{{ message }}</p>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+
+        <form action="{{ url_for('analyze') }}" method="post" enctype="multipart/form-data" class="upload-form">
+          <label for="article">File artikel ilmiah (.docx)</label>
+          <input id="article" name="article" type="file" accept=".docx" required>
+          <button type="submit">
+            <span class="button-status" aria-hidden="true">▶</span>
+            Upload Artikel
+          </button>
+        </form>
+
+        <section class="workflow">
+          <div class="workflow-heading">
+            <p class="eyebrow">Alur Analisis</p>
+            <h2>Workflow Reviewer Artikel</h2>
+          </div>
+
+          <div class="workflow-steps">
+            {% for step in workflow_steps %}
+              <article class="workflow-step {% if step.complete %}is-complete{% elif step.unlocked %}is-active{% else %}is-locked{% endif %}">
+                <div class="workflow-icon" aria-hidden="true">{{ step.icon }}</div>
+                <div class="workflow-content">
+                  <p class="workflow-title">{{ step.number }}. {{ step.label }}</p>
+                  <p class="workflow-status">{{ step.status }}</p>
+
+                  <button type="button" class="workflow-button is-locked" disabled aria-disabled="true">
+                    <span class="button-status" aria-hidden="true">🔒</span>
+                    {{ step.label }}
+                  </button>
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        </section>
+
+        <form action="{{ url_for('test_ai') }}" method="post" class="upload-form">
+          <button type="submit" class="secondary-action">Tes Koneksi AI</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>
