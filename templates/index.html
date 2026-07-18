@@ -9,6 +9,14 @@
   <body>
     <main class="shell">
       <section class="panel upload-panel">
+        <div class="review-actions" style="justify-content:flex-end;">
+          <span class="lead note">Login sebagai <strong>{{ current_user.username }}</strong></span>
+          <a class="secondary-button" href="{{ url_for('api_key_page') }}">Kelola API Key</a>
+          <form action="{{ url_for('logout') }}" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="danger-button">Logout</button>
+          </form>
+        </div>
         <div>
           <p class="eyebrow">Reviewer Artikel Ilmiah</p>
           <h1>AI Academic Review Assistant</h1>
@@ -27,12 +35,6 @@
         </div>
 
         {% with messages = get_flashed_messages() %}
-          {% if openai_warning %}
-            <div class="alert">
-              <p>{{ openai_warning }}</p>
-            </div>
-          {% endif %}
-
           {% if messages %}
             <div class="alert">
               {% for message in messages %}
@@ -43,6 +45,7 @@
         {% endwith %}
 
         <form action="{{ url_for('analyze') }}" method="post" enctype="multipart/form-data" class="upload-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <label for="article">File artikel ilmiah (.docx)</label>
           <input id="article" name="article" type="file" accept=".docx" required>
           <button type="submit">
@@ -76,6 +79,7 @@
         </section>
 
         <form action="{{ url_for('test_ai') }}" method="post" class="upload-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="secondary-action">Tes Koneksi AI</button>
         </form>
       </section>

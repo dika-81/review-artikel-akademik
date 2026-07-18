@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OpenAI API Key - Reviu Artikel Ilmiah AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel upload-panel">
+        <div>
+          <p class="eyebrow">Sesi {{ current_user.username }}</p>
+          <h1>OpenAI API Key</h1>
+          <p class="lead">
+            Masukkan OpenAI API key milik Anda sendiri untuk memproses analisis artikel.
+          </p>
+          <p class="lead note">
+            Key hanya digunakan selama sesi login ini dan disimpan sementara di server
+            (bukan di browser Anda). Key akan otomatis dihapus saat Anda logout atau
+            saat sesi berakhir, dan tidak pernah ditampilkan kembali maupun disimpan
+            permanen. Jangan simpan API key di browser atau membagikannya kepada siapa pun.
+          </p>
+        </div>
+
+        {% with messages = get_flashed_messages() %}
+          {% if messages %}
+            <div class="alert">
+              {% for message in messages %}
+                <p>{{ message }}</p>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+
+        {% if has_api_key %}
+          <div class="alert">
+            <p>API key sudah tersimpan untuk sesi ini. Anda dapat langsung menganalisis artikel,
+               atau menghapus key dari sesi melalui tombol di bawah.</p>
+          </div>
+          <div class="review-actions">
+            <a class="secondary-button" href="{{ url_for('index') }}">Lanjut ke Analisis</a>
+            <form action="{{ url_for('delete_api_key') }}" method="post">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button type="submit" class="danger-button">Hapus API Key</button>
+            </form>
+          </div>
+        {% endif %}
+
+        <form action="{{ url_for('api_key_page') }}" method="post" class="upload-form" autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label for="api_key">OpenAI API Key</label>
+          <input
+            id="api_key"
+            name="api_key"
+            type="password"
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            data-lpignore="true"
+            data-1p-ignore="true"
+            placeholder="sk-..."
+            required
+          >
+          <label class="lead note" style="display:flex;align-items:center;gap:6px;">
+            <input type="checkbox" id="toggle-key" style="width:auto;">
+            Tampilkan key
+          </label>
+          <button type="submit">Simpan untuk Sesi Ini</button>
+        </form>
+
+        <form action="{{ url_for('logout') }}" method="post" class="upload-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="secondary-action">Logout</button>
+        </form>
+      </section>
+    </main>
+    <script>
+      document.getElementById("toggle-key").addEventListener("change", function () {
+        document.getElementById("api_key").type = this.checked ? "text" : "password";
+      });
+    </script>
+  </body>
+</html>

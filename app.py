@@ -1,13 +1,35 @@
 import json
 import os
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import re
 
+import openai
 from docx import Document
 from dotenv import load_dotenv
-from flask import Flask, flash, redirect, render_template, request, send_file, url_for
+from flask import (
+    Flask,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    session,
+    url_for,
+)
+from flask_login import (
+    LoginManager,
+    UserMixin,
+    current_user,
+    login_required,
+    login_user,
+    logout_user,
+)
+from flask_session import Session
+from flask_wtf.csrf import CSRFProtect
 import httpx
 from openai import OpenAI
 from reportlab.lib import colors
@@ -21,26 +43,248 @@ from reportlab.platypus import (
     Spacer,
 )
 from xml.sax.saxutils import escape
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "output"
+INSTANCE_DIR = BASE_DIR / "instance"
 ALLOWED_EXTENSIONS = {".docx"}
+MAX_ARTICLE_CHARS = 300_000
+API_KEY_SESSION_FIELD = "openai_api_key"
 
 load_dotenv()
 
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"),
-)
+IS_PRODUCTION = os.getenv("FLASK_ENV", "production").lower() != "development"
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY") or os.getenv(
+    "FLASK_SECRET_KEY", "dev-secret-change-me"
+)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+
+# Session server-side: API key pengguna tidak pernah berada di cookie browser,
+# cookie hanya berisi ID session yang ditandatangani.
+app.config["SESSION_TYPE"] = os.getenv("SESSION_TYPE", "filesystem")
+app.config["SESSION_PERMANENT"] = True
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
+    minutes=int(os.getenv("SESSION_LIFETIME_MINUTES", "120"))
+)
+app.config["SESSION_FILE_DIR"] = str(BASE_DIR / "flask_session")
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = IS_PRODUCTION
+app.config["REMEMBER_COOKIE_HTTPONLY"] = True
+app.config["REMEMBER_COOKIE_SECURE"] = IS_PRODUCTION
+
+if app.config["SESSION_TYPE"] == "redis":
+    import redis
+
+    redis_url = os.getenv("REDIS_URL")
+    if not redis_url:
+        raise RuntimeError("SESSION_TYPE=redis membutuhkan environment variable REDIS_URL.")
+    app.config["SESSION_REDIS"] = redis.from_url(redis_url)
+
+Session(app)
+csrf = CSRFProtect(app)
+
+login_manager = LoginManager(app)
+login_manager.login_view = "login"
+login_manager.login_message = "Silakan login terlebih dahulu."
 
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
+INSTANCE_DIR.mkdir(exist_ok=True)
+
+DATABASE_PATH = Path(os.getenv("DATABASE_PATH", INSTANCE_DIR / "app.db"))
+
+
+# ---------------------------------------------------------------------------
+# Akun pengguna
+# ---------------------------------------------------------------------------
+
+def get_db():
+    connection = sqlite3.connect(DATABASE_PATH)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def init_db():
+    with get_db() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+
+
+init_db()
+
+
+class User(UserMixin):
+    def __init__(self, user_id, username):
+        self.id = str(user_id)
+        self.username = username
+
+
+def find_user_row(username):
+    with get_db() as connection:
+        return connection.execute(
+            "SELECT * FROM users WHERE username = ?", (username,)
+        ).fetchone()
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    with get_db() as connection:
+        row = connection.execute(
+            "SELECT * FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return User(row["id"], row["username"])
+
+
+# ---------------------------------------------------------------------------
+# Penyimpanan per pengguna
+# ---------------------------------------------------------------------------
+
+def user_upload_dir():
+    path = UPLOAD_DIR / secure_filename(str(current_user.id))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def user_output_dir():
+    path = OUTPUT_DIR / secure_filename(str(current_user.id))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# API key pengguna di server-side session
+# ---------------------------------------------------------------------------
+
+def get_session_api_key():
+    return session.get(API_KEY_SESSION_FIELD)
+
+
+def clear_session_api_key():
+    session.pop(API_KEY_SESSION_FIELD, None)
+
+
+def get_model_name():
+    return os.getenv("OPENAI_MODEL", "gpt-5.6")
+
+
+def build_user_client(api_key):
+    return OpenAI(api_key=api_key, timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "300")))
+
+
+def translate_openai_error(exc):
+    """Terjemahkan exception OpenAI menjadi pesan aman berbahasa Indonesia.
+
+    Tidak pernah menyertakan isi response mentah agar tidak membocorkan
+    informasi sensitif (termasuk potongan API key).
+    """
+    if isinstance(exc, openai.AuthenticationError):
+        return "API key OpenAI tidak valid atau sudah dicabut. Periksa kembali API key Anda."
+    if isinstance(exc, openai.RateLimitError):
+        code = getattr(exc, "code", "") or ""
+        body = getattr(exc, "body", None) or {}
+        if code == "insufficient_quota" or (
+            isinstance(body, dict)
+            and (body.get("error") or {}).get("type") == "insufficient_quota"
+        ):
+            return (
+                "Kuota atau saldo OpenAI API Anda tidak mencukupi. Silakan periksa halaman "
+                "billing dan batas penggunaan akun OpenAI Anda, lalu coba kembali."
+            )
+        return "Batas laju (rate limit) OpenAI tercapai. Tunggu sebentar, lalu coba kembali."
+    if isinstance(exc, (openai.NotFoundError, openai.PermissionDeniedError)):
+        return (
+            f"Model '{get_model_name()}' tidak tersedia atau tidak diizinkan untuk API key Anda. "
+            "Hubungi administrator atau gunakan API key dengan akses model tersebut."
+        )
+    if isinstance(exc, openai.APITimeoutError):
+        return "Permintaan ke OpenAI melebihi batas waktu. Silakan coba kembali."
+    if isinstance(exc, openai.APIConnectionError):
+        return "Koneksi ke OpenAI gagal. Periksa koneksi internet server, lalu coba kembali."
+    if isinstance(exc, openai.BadRequestError):
+        code = getattr(exc, "code", "") or ""
+        if code == "context_length_exceeded":
+            return "Artikel terlalu panjang untuk dianalisis dalam satu permintaan."
+        return "Permintaan ke OpenAI ditolak. Periksa kembali isi artikel Anda."
+    if isinstance(exc, openai.OpenAIError):
+        return "Terjadi kesalahan pada layanan OpenAI. Silakan coba kembali."
+    return None
+
+
+def safe_error_message(exc):
+    translated = translate_openai_error(exc)
+    if translated:
+        return translated
+    if isinstance(exc, RuntimeError):
+        return str(exc)
+    return "Terjadi kesalahan internal aplikasi. Silakan coba kembali."
+
+
+def validate_api_key(api_key):
+    """Validasi ringan: ambil metadata model via API. Tidak mengonsumsi token.
+
+    Mengembalikan None bila valid, atau pesan error berbahasa Indonesia.
+    """
+    client = OpenAI(api_key=api_key, timeout=20)
+    try:
+        client.models.retrieve(get_model_name())
+    except (openai.NotFoundError, openai.PermissionDeniedError):
+        # Key valid tetapi model default tidak terlihat; pastikan key bisa
+        # mengakses daftar model sebelum menerima key tersebut.
+        try:
+            client.models.list()
+        except openai.OpenAIError as exc:
+            return translate_openai_error(exc) or "API key tidak dapat divalidasi."
+    except openai.OpenAIError as exc:
+        return translate_openai_error(exc) or "API key tidak dapat divalidasi."
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Guard akses terpusat
+# ---------------------------------------------------------------------------
+
+PUBLIC_ENDPOINTS = {"login", "register", "healthz", "static"}
+NO_API_KEY_REQUIRED_ENDPOINTS = PUBLIC_ENDPOINTS | {"api_key_page", "delete_api_key", "logout"}
+
+
+@app.before_request
+def enforce_access_rules():
+    endpoint = request.endpoint
+    if endpoint is None or endpoint in PUBLIC_ENDPOINTS:
+        return None
+    if not current_user.is_authenticated:
+        return redirect(url_for("login"))
+    if endpoint in NO_API_KEY_REQUIRED_ENDPOINTS:
+        return None
+    if not get_session_api_key():
+        flash("Masukkan OpenAI API key Anda terlebih dahulu untuk sesi ini.")
+        return redirect(url_for("api_key_page"))
+    return None
+
+
+@app.after_request
+def add_no_store_headers(response):
+    if request.endpoint != "static":
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 RESULT_SECTIONS = [
@@ -430,15 +674,13 @@ def allowed_file(filename):
     return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
 
-def get_openai_warning():
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key or api_key == "isi_api_key":
-        return "Peringatan: isi OPENAI_API_KEY yang valid di file .env."
-    return None
-
-
 def extract_docx_text(path):
-    document = Document(path)
+    try:
+        document = Document(path)
+    except Exception as exc:
+        raise RuntimeError(
+            "File tidak dapat dibaca. Pastikan file adalah dokumen .docx yang valid dan tidak rusak."
+        ) from exc
     paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs]
     table_text = []
 
@@ -449,7 +691,13 @@ def extract_docx_text(path):
                 table_text.append(" | ".join(cells))
 
     text_blocks = [item for item in paragraphs + table_text if item]
-    return "\n".join(text_blocks)
+    article_text = "\n".join(text_blocks)
+    if len(article_text) > MAX_ARTICLE_CHARS:
+        raise RuntimeError(
+            "Artikel terlalu panjang untuk diproses. Bagi artikel menjadi bagian yang lebih "
+            "kecil atau kurangi lampiran, lalu unggah kembali."
+        )
+    return article_text
 
 
 def normalize_heading(text):
@@ -470,7 +718,6 @@ def detect_title(article_text):
     stopped_at_abstract = False
 
     stop_heading_found = None
-    print("SECTION START:", lines[0] if lines else None)
 
     for line in lines:
         if heading_matches(line, ABSTRACT_HEADINGS):
@@ -480,7 +727,6 @@ def detect_title(article_text):
 
         title_candidates.append(line)
 
-    print("SECTION STOP:", stop_heading_found)
 
     if not title_candidates:
         return {
@@ -528,8 +774,6 @@ def detect_abstract_section(article_text):
             break
 
     if start_index is None:
-        print("SECTION START:", None)
-        print("SECTION STOP:", None)
         return {
             "detected": False,
             "heading": None,
@@ -537,7 +781,6 @@ def detect_abstract_section(article_text):
             "note": "Bagian abstrak tidak terdeteksi melalui heading Abstract atau Abstrak.",
         }
 
-    print("SECTION START:", detected_heading)
     abstract_lines = []
     if inline_abstract_text:
         cleaned_inline = split_abstract_keywords(inline_abstract_text)
@@ -559,7 +802,6 @@ def detect_abstract_section(article_text):
 
         abstract_lines.append(line)
 
-    print("SECTION STOP:", stop_heading_found)
 
     abstract_text = "\n".join(abstract_lines).strip()
     note = "Teks abstrak diambil setelah heading Abstrak/Abstract sampai sebelum kata kunci atau pendahuluan."
@@ -586,8 +828,6 @@ def detect_introduction_section(article_text):
             break
 
     if start_index is None:
-        print("SECTION START:", None)
-        print("SECTION STOP:", None)
         return {
             "detected": False,
             "heading": None,
@@ -598,7 +838,6 @@ def detect_introduction_section(article_text):
             ),
         }
 
-    print("SECTION START:", detected_heading)
     end_index = len(lines)
     stop_heading_found = None
     for index in range(start_index + 1, len(lines)):
@@ -607,7 +846,6 @@ def detect_introduction_section(article_text):
             stop_heading_found = lines[index]
             break
 
-    print("SECTION STOP:", stop_heading_found)
     section_text = "\n".join(lines[start_index:end_index]).strip()
     note = "Teks pendahuluan diambil dari heading pendahuluan sampai sebelum section berikutnya."
     if end_index == len(lines):
@@ -636,8 +874,6 @@ def detect_methodology_section(article_text):
             break
 
     if start_index is None:
-        print("SECTION START:", None)
-        print("SECTION STOP:", None)
         return {
             "detected": False,
             "heading": None,
@@ -646,7 +882,6 @@ def detect_methodology_section(article_text):
             ),
         }
 
-    print("SECTION START:", detected_heading)
     end_index = len(lines)
     stop_heading_found = None
     for index in range(start_index + 1, len(lines)):
@@ -655,7 +890,6 @@ def detect_methodology_section(article_text):
             stop_heading_found = lines[index]
             break
 
-    print("SECTION STOP:", stop_heading_found)
     section_text = "\n".join(lines[start_index:end_index]).strip()
     return {
         "detected": True,
@@ -676,8 +910,6 @@ def detect_results_discussion_section(article_text):
             break
 
     if start_index is None:
-        print("SECTION START:", None)
-        print("SECTION STOP:", None)
         return {
             "detected": False,
             "heading": None,
@@ -686,7 +918,6 @@ def detect_results_discussion_section(article_text):
             ),
         }
 
-    print("SECTION START:", detected_heading)
     end_index = len(lines)
     stop_heading_found = None
     for index in range(start_index + 1, len(lines)):
@@ -695,7 +926,6 @@ def detect_results_discussion_section(article_text):
             stop_heading_found = lines[index]
             break
 
-    print("SECTION STOP:", stop_heading_found)
     section_text = "\n".join(lines[start_index:end_index]).strip()
     return {
         "detected": True,
@@ -716,8 +946,6 @@ def detect_section(article_text, start_keywords, stop_keywords, section_name):
             break
 
     if start_index is None:
-        print("SECTION START:", None)
-        print("SECTION STOP:", None)
         return {
             "detected": False,
             "heading": None,
@@ -733,8 +961,6 @@ def detect_section(article_text, start_keywords, stop_keywords, section_name):
             stop_heading_found = lines[index]
             break
 
-    print("SECTION START:", detected_heading)
-    print("SECTION STOP:", stop_heading_found)
     return {
         "detected": True,
         "heading": detected_heading,
@@ -1561,20 +1787,25 @@ Isi artikel lengkap:
 
 
 def call_openai_chat(system_prompt, user_prompt):
-    response = client.chat.completions.create(
-        model=os.getenv(
-            "OPENAI_MODEL",
-            "gpt-5.6",
-        ),
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
+    api_key = get_session_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "OpenAI API key belum dimasukkan untuk sesi ini. Silakan isi API key terlebih dahulu."
+        )
 
-    content = response.choices[0].message.content
+    client = build_user_client(api_key)
+    try:
+        response = client.responses.create(
+            model=get_model_name(),
+            instructions=system_prompt,
+            input=user_prompt,
+        )
+    except openai.OpenAIError as exc:
+        raise RuntimeError(translate_openai_error(exc)) from exc
+
+    content = response.output_text
     if not content:
-        raise RuntimeError("OpenAI API tidak mengembalikan konten analisis.")
+        raise RuntimeError("OpenAI API mengembalikan respons kosong. Silakan ulangi analisis.")
 
     return content
 
@@ -2182,25 +2413,25 @@ def guard_module_order(result, module_key):
 def save_result(filename, result):
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     output_name = f"{Path(filename).stem}-{timestamp}.json"
-    output_path = OUTPUT_DIR / output_name
+    output_path = user_output_dir() / output_name
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return output_name
 
 
 def load_result(output_name):
-    output_path = OUTPUT_DIR / secure_filename(output_name)
+    output_path = user_output_dir() / secure_filename(output_name)
     if not output_path.exists():
         return None
     return json.loads(output_path.read_text(encoding="utf-8"))
 
 
 def update_result(output_name, result):
-    output_path = OUTPUT_DIR / secure_filename(output_name)
+    output_path = user_output_dir() / secure_filename(output_name)
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def uploaded_file_is_used_elsewhere(filename, excluded_output_name):
-    for output_path in OUTPUT_DIR.glob("*.json"):
+    for output_path in user_output_dir().glob("*.json"):
         if output_path.name == excluded_output_name:
             continue
         try:
@@ -2383,11 +2614,105 @@ def build_review_pdf(result, pdf_path):
     document.build(story, onFirstPage=draw_pdf_page, onLaterPages=draw_pdf_page)
 
 
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    return jsonify({"status": "ok"})
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if current_user.is_authenticated:
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip().lower()
+        password = request.form.get("password") or ""
+        confirm = request.form.get("confirm_password") or ""
+
+        if not re.fullmatch(r"[a-z0-9@._-]{3,80}", username):
+            flash("Username minimal 3 karakter dan hanya boleh huruf, angka, @ . _ -")
+        elif len(password) < 8:
+            flash("Password minimal 8 karakter.")
+        elif password != confirm:
+            flash("Konfirmasi password tidak sama.")
+        elif find_user_row(username) is not None:
+            flash("Username sudah terdaftar. Silakan login.")
+        else:
+            with get_db() as connection:
+                connection.execute(
+                    "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
+                    (
+                        username,
+                        generate_password_hash(password),
+                        datetime.now().isoformat(),
+                    ),
+                )
+            flash("Akun berhasil dibuat. Silakan login.")
+            return redirect(url_for("login"))
+
+    return render_template("register.html")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip().lower()
+        password = request.form.get("password") or ""
+        row = find_user_row(username)
+        if row is None or not check_password_hash(row["password_hash"], password):
+            flash("Username atau password salah.")
+        else:
+            # Session baru setiap login: tidak ada API key lama yang terbawa.
+            session.clear()
+            login_user(User(row["id"], row["username"]))
+            flash("Login berhasil. Masukkan OpenAI API key Anda untuk memulai sesi analisis.")
+            return redirect(url_for("api_key_page"))
+
+    return render_template("login.html")
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    clear_session_api_key()
+    logout_user()
+    session.clear()
+    flash("Anda telah logout. API key Anda telah dihapus dari sesi.")
+    return redirect(url_for("login"))
+
+
+@app.route("/api-key", methods=["GET", "POST"])
+def api_key_page():
+    if request.method == "POST":
+        api_key = (request.form.get("api_key") or "").strip()
+        if not api_key:
+            flash("API key belum diisi.")
+        else:
+            error_message = validate_api_key(api_key)
+            if error_message:
+                flash(error_message)
+            else:
+                session[API_KEY_SESSION_FIELD] = api_key
+                flash("API key valid dan disimpan untuk sesi ini.")
+                return redirect(url_for("index"))
+        return render_template("api_key.html", has_api_key=bool(get_session_api_key()))
+
+    return render_template("api_key.html", has_api_key=bool(get_session_api_key()))
+
+
+@app.route("/api-key/delete", methods=["POST"])
+def delete_api_key():
+    clear_session_api_key()
+    flash("API key telah dihapus dari sesi. Masukkan kembali untuk melanjutkan analisis.")
+    return redirect(url_for("api_key_page"))
+
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template(
         "index.html",
-        openai_warning=get_openai_warning(),
         workflow_steps=get_workflow_steps(),
     )
 
@@ -2396,9 +2721,9 @@ def index():
 def test_ai():
     try:
         reply = test_openai_connection()
-        flash(f"✅ OpenAI GPT-5.6 terhubung\nBalasan model: {reply}")
+        flash(f"✅ Koneksi OpenAI berhasil dengan model {get_model_name()}.\nBalasan model: {reply}")
     except Exception as exc:
-        flash(f"Tes koneksi AI gagal: {exc}")
+        flash(f"Tes koneksi AI gagal: {safe_error_message(exc)}")
 
     return redirect(url_for("index"))
 
@@ -2416,7 +2741,7 @@ def download_review(output_name):
         return redirect(url_for("index"))
 
     pdf_name = f"{Path(safe_output_name).stem}.pdf"
-    pdf_path = OUTPUT_DIR / pdf_name
+    pdf_path = user_output_dir() / pdf_name
     build_review_pdf(result, pdf_path)
     return send_file(pdf_path, as_attachment=True, download_name=pdf_name)
 
@@ -2429,14 +2754,14 @@ def delete_review(output_name):
         flash("Hasil reviu tidak ditemukan atau sudah dihapus.")
         return redirect(url_for("index"))
 
-    output_path = OUTPUT_DIR / safe_output_name
-    pdf_path = OUTPUT_DIR / f"{Path(safe_output_name).stem}.pdf"
+    output_path = user_output_dir() / safe_output_name
+    pdf_path = user_output_dir() / f"{Path(safe_output_name).stem}.pdf"
     uploaded_name = secure_filename(result.get("_filename", ""))
 
     output_path.unlink(missing_ok=True)
     pdf_path.unlink(missing_ok=True)
     if uploaded_name and not uploaded_file_is_used_elsewhere(uploaded_name, safe_output_name):
-        uploaded_path = UPLOAD_DIR / uploaded_name
+        uploaded_path = user_upload_dir() / uploaded_name
         uploaded_path.unlink(missing_ok=True)
 
     flash("Hasil reviu dan file terkait berhasil dihapus.")
@@ -2456,7 +2781,7 @@ def analyze():
         return redirect(url_for("index"))
 
     filename = secure_filename(uploaded_file.filename)
-    saved_path = UPLOAD_DIR / filename
+    saved_path = user_upload_dir() / filename
     uploaded_file.save(saved_path)
 
     try:
@@ -2472,7 +2797,7 @@ def analyze():
         }
         output_name = save_result(filename, result)
     except Exception as exc:
-        flash(str(exc))
+        flash(safe_error_message(exc))
         return redirect(url_for("index"))
 
     return render_template("result.html", **result_template_context(filename, output_name, result))
@@ -2482,7 +2807,7 @@ def analyze():
 def analyze_title():
     filename = secure_filename(request.form.get("filename", ""))
     output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
+    saved_path = user_upload_dir() / filename
 
     if not filename or not saved_path.exists():
         flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
@@ -2504,7 +2829,7 @@ def analyze_title():
         )
         update_result(output_name, result)
     except Exception as exc:
-        flash(str(exc))
+        flash(safe_error_message(exc))
         return render_template("result.html", **result_template_context(filename, output_name, result))
 
     return render_template("result.html", **result_template_context(filename, output_name, result))
@@ -2514,7 +2839,7 @@ def analyze_title():
 def analyze_abstract():
     filename = secure_filename(request.form.get("filename", ""))
     output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
+    saved_path = user_upload_dir() / filename
 
     if not filename or not saved_path.exists():
         flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
@@ -2537,7 +2862,7 @@ def analyze_abstract():
         )
         update_result(output_name, result)
     except Exception as exc:
-        flash(str(exc))
+        flash(safe_error_message(exc))
         return render_template("result.html", **result_template_context(filename, output_name, result))
 
     return render_template("result.html", **result_template_context(filename, output_name, result))
@@ -2547,7 +2872,7 @@ def analyze_abstract():
 def analyze_introduction():
     filename = secure_filename(request.form.get("filename", ""))
     output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
+    saved_path = user_upload_dir() / filename
 
     if not filename or not saved_path.exists():
         flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
@@ -2570,7 +2895,7 @@ def analyze_introduction():
         )
         update_result(output_name, result)
     except Exception as exc:
-        flash(str(exc))
+        flash(safe_error_message(exc))
         return render_template("result.html", **result_template_context(filename, output_name, result))
 
     return render_template("result.html", **result_template_context(filename, output_name, result))
@@ -2580,7 +2905,7 @@ def analyze_introduction():
 def analyze_methodology():
     filename = secure_filename(request.form.get("filename", ""))
     output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
+    saved_path = user_upload_dir() / filename
 
     if not filename or not saved_path.exists():
         flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
@@ -2604,7 +2929,7 @@ def analyze_methodology():
         )
         update_result(output_name, result)
     except Exception as exc:
-        flash(str(exc))
+        flash(safe_error_message(exc))
         return render_template("result.html", **result_template_context(filename, output_name, result))
 
     return render_template("result.html", **result_template_context(filename, output_name, result))
@@ -2614,7 +2939,7 @@ def analyze_methodology():
 def analyze_results_discussion():
     filename = secure_filename(request.form.get("filename", ""))
     output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
+    saved_path = user_upload_dir() / filename
 
     if not filename or not saved_path.exists():
         flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
@@ -2639,7 +2964,7 @@ def analyze_results_discussion():
         )
         update_result(output_name, result)
     except Exception as exc:
-        flash(str(exc))
+        flash(safe_error_message(exc))
         return render_template("result.html", **result_template_context(filename, output_name, result))
 
     return render_template("result.html", **result_template_context(filename, output_name, result))
@@ -2649,7 +2974,7 @@ def analyze_results_discussion():
 def analyze_conclusion():
     filename = secure_filename(request.form.get("filename", ""))
     output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
+    saved_path = user_upload_dir() / filename
 
     if not filename or not saved_path.exists():
         flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
@@ -2671,67 +2996,7 @@ def analyze_conclusion():
         )
         update_result(output_name, result)
     except Exception as exc:
-        flash(str(exc))
-
-    return render_template("result.html", **result_template_context(filename, output_name, result))
-
-
-def analyze_consistency():
-    filename = secure_filename(request.form.get("filename", ""))
-    output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
-
-    if not filename or not saved_path.exists():
-        flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
-        return redirect(url_for("index"))
-
-    result = load_result(output_name) if output_name else None
-    if result is None:
-        flash("Hasil analisis awal tidak ditemukan. Silakan analisis artikel dari awal.")
-        return redirect(url_for("index"))
-    if not guard_module_order(result, "konsistensi_artikel"):
-        return render_template("result.html", **result_template_context(filename, output_name, result))
-
-    try:
-        article_text = extract_docx_text(saved_path)
-        consistency_result = analyze_consistency_with_ai(article_text, result)
-        result["konsistensi_artikel"] = {
-            "hasil": consistency_result,
-        }
-        update_result(output_name, result)
-    except Exception as exc:
-        flash(str(exc))
-        return render_template("result.html", **result_template_context(filename, output_name, result))
-
-    return render_template("result.html", **result_template_context(filename, output_name, result))
-
-
-def analyze_reviewer_simulator():
-    filename = secure_filename(request.form.get("filename", ""))
-    output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
-
-    if not filename or not saved_path.exists():
-        flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
-        return redirect(url_for("index"))
-
-    result = load_result(output_name) if output_name else None
-    if result is None:
-        flash("Hasil analisis awal tidak ditemukan. Silakan analisis artikel dari awal.")
-        return redirect(url_for("index"))
-    if not guard_module_order(result, "reviewer_jurnal_simulator"):
-        return render_template("result.html", **result_template_context(filename, output_name, result))
-
-    try:
-        article_text = extract_docx_text(saved_path)
-        reviewer_result = analyze_reviewer_simulator_with_ai(article_text, result)
-        result["reviewer_jurnal_simulator"] = {
-            "hasil": reviewer_result,
-        }
-        update_result(output_name, result)
-    except Exception as exc:
-        flash(str(exc))
-        return render_template("result.html", **result_template_context(filename, output_name, result))
+        flash(safe_error_message(exc))
 
     return render_template("result.html", **result_template_context(filename, output_name, result))
 
@@ -2740,7 +3005,7 @@ def analyze_reviewer_simulator():
 def analyze_reference_citation():
     filename = secure_filename(request.form.get("filename", ""))
     output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
+    saved_path = user_upload_dir() / filename
 
     if not filename or not saved_path.exists():
         flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
@@ -2763,7 +3028,7 @@ def analyze_reference_citation():
         )
         update_result(output_name, result)
     except Exception as exc:
-        flash(str(exc))
+        flash(safe_error_message(exc))
         return render_template("result.html", **result_template_context(filename, output_name, result))
 
     return render_template("result.html", **result_template_context(filename, output_name, result))
@@ -2773,7 +3038,7 @@ def analyze_reference_citation():
 def analyze_reference_recommendations():
     filename = secure_filename(request.form.get("filename", ""))
     output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
+    saved_path = user_upload_dir() / filename
 
     if not filename or not saved_path.exists():
         flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
@@ -2794,7 +3059,7 @@ def analyze_reference_recommendations():
         result["referensi_tambahan"] = recommendation_result
         update_result(output_name, result)
     except Exception as exc:
-        flash(f"Pencarian referensi gagal: {exc}")
+        flash(f"Pencarian referensi gagal: {safe_error_message(exc)}")
 
     return render_template("result.html", **result_template_context(filename, output_name, result))
 
@@ -2832,65 +3097,10 @@ def add_recommended_reference():
     )
 
 
-def analyze_novelty_contribution():
-    filename = secure_filename(request.form.get("filename", ""))
-    output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
-
-    if not filename or not saved_path.exists():
-        flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
-        return redirect(url_for("index"))
-
-    result = load_result(output_name) if output_name else None
-    if result is None:
-        flash("Hasil analisis awal tidak ditemukan. Silakan analisis artikel dari awal.")
-        return redirect(url_for("index"))
-    if not guard_module_order(result, "novelty_dan_kontribusi"):
-        return render_template("result.html", **result_template_context(filename, output_name, result))
-
-    try:
-        article_text = extract_docx_text(saved_path)
-        novelty_result = analyze_novelty_contribution_with_ai(article_text, result)
-        result["novelty_dan_kontribusi"] = {
-            "hasil": novelty_result,
-        }
-        update_result(output_name, result)
-    except Exception as exc:
-        flash(str(exc))
-        return render_template("result.html", **result_template_context(filename, output_name, result))
-
-    return render_template("result.html", **result_template_context(filename, output_name, result))
-
-
-def analyze_submission_readiness():
-    filename = secure_filename(request.form.get("filename", ""))
-    output_name = secure_filename(request.form.get("output_name", ""))
-    saved_path = UPLOAD_DIR / filename
-
-    if not filename or not saved_path.exists():
-        flash("File artikel tidak ditemukan. Silakan unggah artikel kembali.")
-        return redirect(url_for("index"))
-
-    result = load_result(output_name) if output_name else None
-    if result is None:
-        flash("Hasil analisis awal tidak ditemukan. Silakan analisis artikel dari awal.")
-        return redirect(url_for("index"))
-    if not guard_module_order(result, "kesiapan_submit"):
-        return render_template("result.html", **result_template_context(filename, output_name, result))
-
-    try:
-        article_text = extract_docx_text(saved_path)
-        readiness_result = analyze_submission_readiness_with_ai(article_text, result)
-        result["kesiapan_submit"] = {
-            "hasil": readiness_result,
-        }
-        update_result(output_name, result)
-    except Exception as exc:
-        flash(str(exc))
-        return render_template("result.html", **result_template_context(filename, output_name, result))
-
-    return render_template("result.html", **result_template_context(filename, output_name, result))
-
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(
+        host=os.getenv("HOST", "127.0.0.1"),
+        port=int(os.getenv("PORT", "5000")),
+        debug=not IS_PRODUCTION,
+    )

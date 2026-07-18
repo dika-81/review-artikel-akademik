@@ -7,3 +7,8 @@ uploads/*
 output/*
 !uploads/.gitkeep
 !output/.gitkeep
+instance/
+flask_session/
+*.db
+*.sqlite3
+.pytest_cache/

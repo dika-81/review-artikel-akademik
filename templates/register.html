@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Daftar Akun - Reviu Artikel Ilmiah AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel upload-panel">
+        <div>
+          <p class="eyebrow">Reviewer Artikel Ilmiah</p>
+          <h1>Daftar Akun</h1>
+          <p class="lead">
+            Buat akun untuk menggunakan aplikasi. Aplikasi tidak menyediakan API key OpenAI;
+            setiap pengguna memakai API key miliknya sendiri.
+          </p>
+        </div>
+
+        {% with messages = get_flashed_messages() %}
+          {% if messages %}
+            <div class="alert">
+              {% for message in messages %}
+                <p>{{ message }}</p>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+
+        <form action="{{ url_for('register') }}" method="post" class="upload-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label for="username">Username (boleh email)</label>
+          <input id="username" name="username" type="text" autocomplete="username" required>
+          <label for="password">Password (minimal 8 karakter)</label>
+          <input id="password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+          <label for="confirm_password">Ulangi Password</label>
+          <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" minlength="8" required>
+          <button type="submit">Daftar</button>
+        </form>
+
+        <p class="lead note">
+          Sudah punya akun? <a href="{{ url_for('login') }}">Login di sini</a>.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

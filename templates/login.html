@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Login - Reviu Artikel Ilmiah AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel upload-panel">
+        <div>
+          <p class="eyebrow">Reviewer Artikel Ilmiah</p>
+          <h1>Login</h1>
+          <p class="lead">
+            Masuk untuk menganalisis dan merevisi artikel ilmiah Anda. Setelah login,
+            Anda akan diminta memasukkan OpenAI API key milik Anda sendiri yang hanya
+            dipakai selama sesi ini.
+          </p>
+        </div>
+
+        {% with messages = get_flashed_messages() %}
+          {% if messages %}
+            <div class="alert">
+              {% for message in messages %}
+                <p>{{ message }}</p>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+
+        <form action="{{ url_for('login') }}" method="post" class="upload-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label for="username">Username</label>
+          <input id="username" name="username" type="text" autocomplete="username" required>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button type="submit">Login</button>
+        </form>
+
+        <p class="lead note">
+          Belum punya akun? <a href="{{ url_for('register') }}">Daftar di sini</a>.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

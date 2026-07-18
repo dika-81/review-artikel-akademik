@@ -29,6 +29,7 @@
               method="post"
               onsubmit="return confirm('Hapus hasil revisi, PDF, dan file artikel terkait?');"
             >
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="danger-button">Hapus</button>
             </form>
           </div>
@@ -50,6 +51,7 @@
 
                   {% if step.unlocked and not step.complete %}
                     <form action="{{ url_for(step.endpoint) }}" method="post" class="workflow-form">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                       <input type="hidden" name="filename" value="{{ filename }}">
                       <input type="hidden" name="output_name" value="{{ output_name }}">
                       <button type="submit" class="workflow-button">{{ step.label }}</button>
@@ -201,6 +203,7 @@
                       <button type="button" disabled>Sudah Ditambahkan</button>
                     {% else %}
                       <form action="{{ url_for('add_recommended_reference') }}" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <input type="hidden" name="filename" value="{{ filename }}">
                         <input type="hidden" name="output_name" value="{{ output_name }}">
                         <input type="hidden" name="doi" value="{{ reference.get('doi', '') }}">
