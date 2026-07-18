@@ -3,21 +3,301 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Hasil Revisi Artikel</title>
+    <title>Hasil Analisis Artikel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   </head>
   <body>
+    {% macro badge(text, kind) -%}
+      <span class="badge badge-{{ kind }}">{{ text }}</span>
+    {%- endmacro %}
+
+    {% macro finding_card(finding) %}
+      <article class="finding-card priority-{{ finding.get('prioritas', 'minor') }}">
+        <header class="finding-head">
+          <span class="finding-id">{{ finding.get("id", "") }}</span>
+          {{ badge(finding.get("prioritas", "minor")|title, finding.get("prioritas", "minor")) }}
+          {% if finding.get("kutipan_valid") is sameas false %}
+            {{ badge("Perlu verifikasi — kutipan tidak ditemukan", "warn") }}
+          {% elif finding.get("validasi_kutipan") == "dikoreksi_otomatis" %}
+            {{ badge("Kutipan dikoreksi otomatis", "info") }}
+          {% elif finding.get("validasi_kutipan") == "terverifikasi" %}
+            {{ badge("Kutipan terverifikasi", "ok") }}
+          {% endif %}
+          {% if finding.get("status_contoh") == "memerlukan data penulis" %}
+            {{ badge("Memerlukan data penulis", "warn") }}
+          {% elif finding.get("status_contoh", "").startswith("dapat") %}
+            {{ badge("Dapat langsung diperbaiki", "ok") }}
+          {% else %}
+            {{ badge("Contoh berupa template", "info") }}
+          {% endif %}
+          {{ badge("Keyakinan: " ~ finding.get("keyakinan", "sedang"), "muted") }}
+        </header>
+
+        {% set loc = finding.get("lokasi", {}) %}
+        <p class="finding-location">
+          <strong>Lokasi:</strong>
+          {{ loc.get("bagian", "") }}
+          {% if loc.get("paragraf") %} · paragraf {{ loc.get("paragraf") }}{% endif %}
+          {% if loc.get("kalimat") %} · kalimat {{ loc.get("kalimat") }}{% endif %}
+          {% if loc.get("penanda") %} · <code>{{ loc.get("penanda") }}</code>{% endif %}
+        </p>
+
+        {% if finding.get("kutipan_asli") %}
+          <blockquote class="finding-quote">“{{ finding.get("kutipan_asli") }}”</blockquote>
+        {% endif %}
+
+        <dl class="finding-detail">
+          {% if finding.get("jenis_masalah") %}<dt>Jenis masalah</dt><dd>{{ finding.get("jenis_masalah") }}</dd>{% endif %}
+          {% if finding.get("kriteria_yang_digunakan") %}
+            <dt>Kriteria yang digunakan</dt>
+            <dd>{{ finding.get("kriteria_yang_digunakan") }}
+              {% if finding.get("alasan_kriteria_relevan") %}<br><em>{{ finding.get("alasan_kriteria_relevan") }}</em>{% endif %}
+            </dd>
+          {% endif %}
+          {% if finding.get("masalah") %}<dt>Masalah</dt><dd>{{ finding.get("masalah") }}</dd>{% endif %}
+          {% if finding.get("alasan") %}<dt>Alasan akademik</dt><dd>{{ finding.get("alasan") }}</dd>{% endif %}
+          {% if finding.get("dampak") %}<dt>Dampak</dt><dd>{{ finding.get("dampak") }}</dd>{% endif %}
+          {% if finding.get("tindakan_revisi") %}<dt>Tindakan revisi</dt><dd>{{ finding.get("tindakan_revisi") }}</dd>{% endif %}
+          {% if finding.get("contoh_revisi") %}
+            <dt>Contoh revisi</dt>
+            <dd class="finding-example">{{ finding.get("contoh_revisi") }}
+              <br><small>Status contoh: {{ finding.get("status_contoh", "template") }}</small>
+            </dd>
+          {% endif %}
+          {% if finding.get("keterkaitan") %}
+            <dt>Hubungan dengan bagian lain</dt>
+            <dd>
+              <ul>
+                {% for link in finding.get("keterkaitan", []) %}
+                  <li><strong>{{ link.get("bagian", "") }}</strong>{% if link.get("penjelasan") %}: {{ link.get("penjelasan") }}{% endif %}</li>
+                {% endfor %}
+              </ul>
+            </dd>
+          {% endif %}
+          {% if finding.get("catatan_validasi") %}
+            <dt>Catatan validasi</dt><dd>{{ finding.get("catatan_validasi") }}</dd>
+          {% endif %}
+        </dl>
+      </article>
+    {% endmacro %}
+
+    {% macro generic_table(rows) %}
+      {% if rows %}
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>{% for key in rows[0].keys() %}<th>{{ key|replace("_", " ")|title }}</th>{% endfor %}</tr>
+            </thead>
+            <tbody>
+              {% for row in rows %}
+                <tr>
+                  {% for value in row.values() %}
+                    <td>
+                      {% if value is mapping %}
+                        {% for k, v in value.items() %}<strong>{{ k|replace("_", " ")|title }}:</strong> {{ v }}<br>{% endfor %}
+                      {% elif value is iterable and value is not string %}
+                        {% for item in value %}{{ item }}{% if not loop.last %}; {% endif %}{% endfor %}
+                      {% else %}
+                        {{ value }}
+                      {% endif %}
+                    </td>
+                  {% endfor %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    {% endmacro %}
+
+    {% macro stage_section(stage_key, stage, stage_number, title, legacy_field=None) %}
+      {% if stage %}
+        <section class="methodology-block">
+          <div class="methodology-heading"><p class="eyebrow">Tahap {{ stage_number }}</p><h1>{{ title }}</h1></div>
+
+          {% if stage.get("ringkasan") or stage.get("skor") is not none %}
+            <section class="panel result-section stage-summary">
+              <div class="summary-badges">
+                {% if stage.get("skor") is not none %}{{ badge("Skor: " ~ stage.get("skor") ~ "/100", "score") }}{% endif %}
+                {% if stage.get("status_kesiapan") %}{{ badge(stage.get("status_kesiapan"), "info") }}{% endif %}
+                {% set counts = stage.get("jumlah_masalah", {}) %}
+                {% if counts %}
+                  {{ badge("Kritis: " ~ counts.get("kritis", 0), "kritis") }}
+                  {{ badge("Mayor: " ~ counts.get("mayor", 0), "mayor") }}
+                  {{ badge("Minor: " ~ counts.get("minor", 0), "minor") }}
+                {% endif %}
+              </div>
+              {% if stage.get("ringkasan") %}<p>{{ stage.get("ringkasan") }}</p>{% endif %}
+              {% if stage.get("prioritas_revisi") %}
+                <h3>Prioritas revisi pertama</h3>
+                <ol>{% for item in stage.get("prioritas_revisi", []) %}<li>{{ item }}</li>{% endfor %}</ol>
+              {% endif %}
+            </section>
+          {% endif %}
+
+          {% if stage.get("masalah_teridentifikasi") %}
+            <section class="panel result-section">
+              <h2>Daftar Masalah ({{ stage.get("masalah_teridentifikasi")|length }})</h2>
+              <div class="finding-grid">
+                {% for finding in stage.get("masalah_teridentifikasi", []) %}
+                  {{ finding_card(finding) }}
+                {% endfor %}
+              </div>
+            </section>
+          {% endif %}
+
+          {% if stage.get("pemeriksaan_unsur") %}
+            <section class="panel result-section">
+              <h2>Pemeriksaan Unsur Abstrak</h2>
+              {{ generic_table(stage.get("pemeriksaan_unsur")) }}
+            </section>
+          {% endif %}
+
+          {% if stage.get("ketidaksesuaian_dengan_artikel") %}
+            <section class="panel result-section">
+              <h2>Ketidaksesuaian dengan Artikel</h2>
+              {{ generic_table(stage.get("ketidaksesuaian_dengan_artikel")) }}
+            </section>
+          {% endif %}
+
+          {% if stage.get("peta_fungsi_paragraf") %}
+            <section class="panel result-section">
+              <h2>Peta Fungsi Paragraf</h2>
+              {{ generic_table(stage.get("peta_fungsi_paragraf")) }}
+            </section>
+          {% endif %}
+
+          {% if stage.get("evaluasi_gap_penelitian") %}
+            <section class="panel result-section">
+              <h2>Evaluasi Gap Penelitian</h2><p>{{ stage.get("evaluasi_gap_penelitian") }}</p>
+            </section>
+          {% endif %}
+          {% if stage.get("evaluasi_tujuan_dan_rumusan_masalah") %}
+            <section class="panel result-section">
+              <h2>Evaluasi Tujuan dan Rumusan Masalah</h2><p>{{ stage.get("evaluasi_tujuan_dan_rumusan_masalah") }}</p>
+            </section>
+          {% endif %}
+
+          {% if stage.get("pemeriksaan_komponen") %}
+            <section class="panel result-section">
+              <h2>Pemeriksaan Komponen Metodologi</h2>
+              {{ generic_table(stage.get("pemeriksaan_komponen")) }}
+            </section>
+          {% endif %}
+          {% if stage.get("kesesuaian_metode_dengan_tujuan") %}
+            <section class="panel result-section">
+              <h2>Kesesuaian Metode dengan Tujuan</h2><p>{{ stage.get("kesesuaian_metode_dengan_tujuan") }}</p>
+            </section>
+          {% endif %}
+
+          {% if stage.get("interpretasi_tabel") %}
+            <section class="panel result-section">
+              <h2>Interpretasi Tabel</h2>
+              {{ generic_table(stage.get("interpretasi_tabel")) }}
+            </section>
+          {% endif %}
+          {% if stage.get("analisis_tema") %}
+            <section class="panel result-section">
+              <h2>Analisis Tema (Data Kualitatif)</h2>
+              {{ generic_table(stage.get("analisis_tema")) }}
+            </section>
+          {% endif %}
+          {% if stage.get("analisis_pembahasan_per_paragraf") %}
+            <section class="panel result-section">
+              <h2>Analisis Pembahasan per Paragraf</h2>
+              {{ generic_table(stage.get("analisis_pembahasan_per_paragraf")) }}
+            </section>
+          {% endif %}
+
+          {% if stage.get("matriks_klaim") %}
+            <section class="panel result-section">
+              <h2>Matriks Klaim Kesimpulan ↔ Hasil</h2>
+              {{ generic_table(stage.get("matriks_klaim")) }}
+            </section>
+          {% endif %}
+
+          {% if stage.get("matriks_keselarasan") %}
+            <section class="panel result-section">
+              <h2>Matriks Keselarasan Lintas Bagian</h2>
+              {{ generic_table(stage.get("matriks_keselarasan")) }}
+            </section>
+          {% endif %}
+
+          {% set revisi = stage.get("versi_revisi") or (stage.get(legacy_field) if legacy_field else None) %}
+          {% if revisi %}
+            <details class="panel result-section final-revision revision-details" open>
+              <summary><h2>Versi Revisi Utuh</h2></summary>
+              <p class="revision-text">{{ revisi }}</p>
+            </details>
+          {% endif %}
+          {% if stage.get("versi_revisi_hasil") %}
+            <details class="panel result-section final-revision revision-details">
+              <summary><h2>Versi Revisi Hasil</h2></summary>
+              <p class="revision-text">{{ stage.get("versi_revisi_hasil") }}</p>
+            </details>
+          {% endif %}
+          {% if stage.get("versi_revisi_pembahasan") %}
+            <details class="panel result-section final-revision revision-details">
+              <summary><h2>Versi Revisi Pembahasan</h2></summary>
+              <p class="revision-text">{{ stage.get("versi_revisi_pembahasan") }}</p>
+            </details>
+          {% endif %}
+
+          {% if stage.get("catatan_data_yang_harus_dilengkapi") %}
+            <section class="panel result-section note-panel">
+              <h2>Data yang Masih Harus Dilengkapi Penulis</h2>
+              <ul>{% for note in stage.get("catatan_data_yang_harus_dilengkapi", []) %}<li>{{ note }}</li>{% endfor %}</ul>
+            </section>
+          {% endif %}
+
+          {% if stage.get("masalah_dikecualikan") %}
+            <details class="panel result-section excluded-panel">
+              <summary>Kriteria yang tidak diterapkan ({{ stage.get("masalah_dikecualikan")|length }}) — tidak relevan dengan jenis artikel</summary>
+              {% for finding in stage.get("masalah_dikecualikan", []) %}
+                <p class="excluded-item">
+                  <strong>{{ finding.get("id", "") }}</strong> — {{ finding.get("masalah", finding.get("jenis_masalah", "")) }}<br>
+                  <em>{{ finding.get("status_kriteria", "Kriteria ini tidak diterapkan karena tidak cukup relevan dengan desain artikel yang terdeteksi.") }}</em>
+                </p>
+              {% endfor %}
+            </details>
+          {% endif %}
+        </section>
+      {% endif %}
+    {% endmacro %}
+
     <main class="shell result-shell">
       <header class="result-header">
         <div>
-          <p class="eyebrow">Hasil Revisi Artikel</p>
+          <p class="eyebrow">Hasil Analisis Artikel</p>
           <h1>{{ filename }}</h1>
-          <p class="lead">Setiap tahap menyimpan revisi final yang ringkas dan siap digunakan.</p>
+          <p class="lead">Setiap tahap menghasilkan evaluasi rinci berbasis bukti teks beserta versi revisi.</p>
+
+          <div class="article-type-panel panel">
+            <p>
+              <strong>Jenis artikel terdeteksi:</strong>
+              {{ article_type.label }}
+              {{ badge("Keyakinan: " ~ article_type.keyakinan, "muted") }}
+              {{ badge("Sumber: " ~ article_type.sumber, "muted") }}
+            </p>
+            {% if article_type.catatan %}<p class="note">{{ article_type.catatan }}</p>{% endif %}
+            <form action="{{ url_for('set_article_type') }}" method="post" class="article-type-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="filename" value="{{ filename }}">
+              <input type="hidden" name="output_name" value="{{ output_name }}">
+              <label for="jenis_artikel">Ubah Jenis Artikel:</label>
+              <select id="jenis_artikel" name="jenis_artikel">
+                {% for value, label in article_type.choices %}
+                  <option value="{{ value }}" {% if value == article_type.pilihan_pengguna %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit" class="secondary-button">Simpan</button>
+            </form>
+          </div>
 
           <div class="review-actions">
             {% if review_complete %}
               <a class="secondary-button download-button" href="{{ url_for('download_review', output_name=output_name) }}">
-                Unduh Hasil Revisi
+                Unduh Laporan PDF
               </a>
             {% else %}
               <button type="button" disabled aria-disabled="true">
@@ -27,7 +307,7 @@
             <form
               action="{{ url_for('delete_review', output_name=output_name) }}"
               method="post"
-              onsubmit="return confirm('Hapus hasil revisi, PDF, dan file artikel terkait?');"
+              onsubmit="return confirm('Hapus hasil analisis, PDF, dan file artikel terkait?');"
             >
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="danger-button">Hapus</button>
@@ -35,10 +315,10 @@
           </div>
         </div>
 
-        <aside class="workflow result-workflow" aria-label="Workflow revisi artikel">
+        <aside class="workflow result-workflow" aria-label="Workflow analisis artikel">
           <div class="workflow-heading">
-            <p class="eyebrow">Alur Revisi</p>
-            <h2>Revisi Artikel Bertahap</h2>
+            <p class="eyebrow">Alur Analisis</p>
+            <h2>Analisis Artikel Bertahap</h2>
           </div>
 
           <div class="workflow-steps">
@@ -66,7 +346,7 @@
             {% endfor %}
           </div>
 
-          <a class="secondary-button" href="{{ url_for('index') }}">Revisi artikel lain</a>
+          <a class="secondary-button" href="{{ url_for('index') }}">Analisis artikel lain</a>
         </aside>
       </header>
 
@@ -80,87 +360,144 @@
         {% endif %}
       {% endwith %}
 
-      {% if not result.get("judul") %}
+      {% if not result.get("profil_artikel") and not result.get("judul") %}
         <section class="panel result-section">
           <h2>Artikel berhasil diunggah</h2>
-          <p>Klik tombol Judul untuk memulai revisi bertahap.</p>
+          <p>Klik tombol <strong>Profil Artikel</strong> untuk memulai analisis bertahap.</p>
+        </section>
+      {% endif %}
+
+      {% if result.get("profil_artikel") %}
+        {% set klas = result["profil_artikel"].get("klasifikasi_artikel", {}) %}
+        <section class="methodology-block">
+          <div class="methodology-heading"><p class="eyebrow">Tahap 1</p><h1>Profil Artikel</h1></div>
+          <section class="panel result-section">
+            <div class="summary-badges">
+              {{ badge(klas.get("label", klas.get("jenis_artikel", "")), "score") }}
+              {{ badge("Keyakinan: " ~ klas.get("tingkat_keyakinan", "rendah"), "muted") }}
+            </div>
+            <p><strong>Pendekatan:</strong> {{ klas.get("pendekatan_penelitian", "") }}</p>
+            <p><strong>Desain:</strong> {{ klas.get("desain_penelitian", "") }}</p>
+            {% if klas.get("catatan") %}<p class="note">{{ klas.get("catatan") }}</p>{% endif %}
+            {% if klas.get("alternatif_kemungkinan") %}
+              <p><strong>Alternatif kemungkinan:</strong>
+                {% for alt in klas.get("alternatif_kemungkinan", []) %}{{ alt }}{% if not loop.last %}; {% endif %}{% endfor %}
+              </p>
+            {% endif %}
+            {% if klas.get("bukti_teks") %}
+              <h3>Bukti teks klasifikasi</h3>
+              <ul>
+                {% for bukti in klas.get("bukti_teks", []) %}
+                  <li>
+                    <strong>{{ bukti.get("lokasi", "") }}</strong>
+                    {% if bukti.get("validasi") == "tidak_ditemukan" %}{{ badge("Perlu verifikasi", "warn") }}{% endif %}
+                    <br>“{{ bukti.get("kutipan", "") }}”
+                  </li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+          </section>
         </section>
       {% endif %}
 
       {% if result.get("judul") %}
+        {% set judul = result["judul"] %}
         <section class="methodology-block">
-          <div class="methodology-heading"><p class="eyebrow">Tahap 1</p><h1>Judul</h1></div>
+          <div class="methodology-heading"><p class="eyebrow">Tahap 2</p><h1>Judul</h1></div>
           <div class="results">
             <section class="panel result-section">
               <h2>Judul Awal</h2>
-              <p>{{ result["judul"].get("judul_awal", "") }}</p>
+              <p>{{ judul.get("judul_awal", "") }}</p>
+              {% if judul.get("evaluasi_judul") %}<p>{{ judul.get("evaluasi_judul") }}</p>{% endif %}
+              {% if judul.get("skor") is not none %}{{ badge("Skor: " ~ judul.get("skor") ~ "/100", "score") }}{% endif %}
             </section>
+            {% if judul.get("masalah_teridentifikasi") %}
+              <section class="panel result-section">
+                <h2>Masalah Judul</h2>
+                <div class="finding-grid">
+                  {% for finding in judul.get("masalah_teridentifikasi", []) %}{{ finding_card(finding) }}{% endfor %}
+                </div>
+              </section>
+            {% endif %}
             <section class="panel result-section">
               <h2>Alternatif Judul</h2>
-              <ul>{% for item in result["judul"].get("alternatif_judul", []) %}<li>{{ item }}</li>{% endfor %}</ul>
+              <ul>{% for item in judul.get("alternatif_judul", []) %}<li>{{ item }}</li>{% endfor %}</ul>
             </section>
             <section class="panel result-section final-revision">
               <h2>Judul Rekomendasi</h2>
-              <p>{{ result["judul"].get("judul_rekomendasi", "") }}</p>
+              <p>{{ judul.get("judul_rekomendasi", "") }}</p>
             </section>
           </div>
         </section>
       {% endif %}
 
-      {% set revision_sections = [
-        ("abstrak", "Tahap 2", "Abstrak Revisi", "abstrak_revisi"),
-        ("pendahuluan", "Tahap 3", "Pendahuluan Revisi", "pendahuluan_revisi"),
-        ("metodologi", "Tahap 4", "Metodologi Revisi", "metodologi_revisi"),
-        ("hasil_pembahasan", "Tahap 5", "Hasil dan Pembahasan Revisi", "hasil_pembahasan_revisi"),
-        ("kesimpulan", "Tahap 6", "Kesimpulan Revisi", "kesimpulan_revisi")
-      ] %}
-      {% for result_key, stage, title, field in revision_sections %}
-        {% if result.get(result_key) %}
-          <section class="methodology-block">
-            <div class="methodology-heading"><p class="eyebrow">{{ stage }}</p><h1>{{ title }}</h1></div>
-            <section class="panel result-section final-revision">
-              <p>{{ result[result_key].get(field, "") }}</p>
-            </section>
-          </section>
-        {% endif %}
-      {% endfor %}
+      {{ stage_section("abstrak", result.get("abstrak"), 3, "Abstrak", "abstrak_revisi") }}
+      {{ stage_section("pendahuluan", result.get("pendahuluan"), 4, "Pendahuluan", "pendahuluan_revisi") }}
+      {{ stage_section("metodologi", result.get("metodologi"), 5, "Metodologi", "metodologi_revisi") }}
+      {{ stage_section("hasil_pembahasan", result.get("hasil_pembahasan"), 6, "Hasil dan Pembahasan", "hasil_pembahasan_revisi") }}
+      {{ stage_section("kesimpulan", result.get("kesimpulan"), 7, "Kesimpulan", "kesimpulan_revisi") }}
+      {{ stage_section("konsistensi", result.get("konsistensi"), 8, "Konsistensi Lintas Bagian") }}
 
       {% if result.get("sitasi_apa") %}
         {% set citation = result["sitasi_apa"] %}
+        {% set matching = citation.get("pencocokan", {}) %}
         <section class="methodology-block">
-          <div class="methodology-heading"><p class="eyebrow">Tahap 7</p><h1>Sitasi dan APA 7</h1></div>
+          <div class="methodology-heading"><p class="eyebrow">Tahap 9</p><h1>Sitasi dan APA 7</h1></div>
           <div class="results">
+            {% if matching.get("statistik") %}
+              <section class="panel result-section stage-summary">
+                <h2>Statistik Pencocokan (Deterministik)</h2>
+                <div class="summary-badges">
+                  {% for key, value in matching.get("statistik", {}).items() %}
+                    {{ badge(key|replace("_", " ")|title ~ ": " ~ value, "muted") }}
+                  {% endfor %}
+                </div>
+                <p class="note">{{ citation.get("catatan_metode", "") }}</p>
+              </section>
+            {% endif %}
+
             {% for key, title in [
               ("sitasi_tanpa_referensi", "Sitasi Tanpa Referensi"),
-              ("referensi_tidak_disitasi", "Referensi Tidak Disitasi"),
-              ("referensi_bermasalah", "Referensi Bermasalah")
+              ("tahun_tidak_cocok", "Tahun Tidak Cocok"),
+              ("kemungkinan_cocok", "Kemungkinan Cocok (Perlu Verifikasi)"),
+              ("referensi_tidak_pernah_disitasi", "Referensi Tidak Pernah Disitasi"),
+              ("referensi_duplikat", "Referensi Duplikat"),
+              ("referensi_tidak_lengkap", "Referensi Tidak Lengkap"),
+              ("sitasi_sekunder", "Kemungkinan Sitasi Sekunder")
             ] %}
+              {% set value = matching.get(key, []) %}
               <section class="panel result-section">
-                <h2>{{ title }}</h2>
-                {% set value = citation.get(key, []) %}
+                <h2>{{ title }} ({{ value|length }})</h2>
                 {% if value %}
-                  <ul>
-                    {% for item in value %}
-                      <li>
-                        {% if item is mapping %}
-                          {% for item_key, item_value in item.items() %}
-                            <strong>{{ item_key|replace("_", " ")|title }}:</strong> {{ item_value }}{% if not loop.last %}<br>{% endif %}
-                          {% endfor %}
-                        {% else %}
-                          {{ item }}
-                        {% endif %}
-                      </li>
-                    {% endfor %}
-                  </ul>
+                  {{ generic_table(value) }}
                 {% else %}
                   <p>Tidak ada masalah yang terdeteksi.</p>
                 {% endif %}
               </section>
             {% endfor %}
-            <section class="panel result-section final-revision">
-              <h2>Catatan Akhir Sitasi</h2>
-              <p>{{ citation.get("catatan_akhir_sitasi", "") }}</p>
-            </section>
+
+            {% if citation.get("evaluasi_ai") %}
+              {% set evaluasi = citation["evaluasi_ai"] %}
+              <section class="panel result-section final-revision">
+                <h2>Evaluasi Kualitas Referensi</h2>
+                {% if evaluasi.get("skor_kualitas_referensi") is not none %}
+                  {{ badge("Skor: " ~ evaluasi.get("skor_kualitas_referensi") ~ "/100", "score") }}
+                {% endif %}
+                {% if evaluasi.get("tingkat_kesiapan_referensi_untuk_publikasi") %}
+                  {{ badge(evaluasi.get("tingkat_kesiapan_referensi_untuk_publikasi"), "info") }}
+                {% endif %}
+                <p>{{ evaluasi.get("ringkasan_kualitas_referensi", "") }}</p>
+                {% if evaluasi.get("penjelasan_masalah") %}{{ generic_table(evaluasi.get("penjelasan_masalah")) }}{% endif %}
+                {% if evaluasi.get("evaluasi_kepatuhan_apa_7") %}
+                  <h3>Kepatuhan APA 7</h3>
+                  {{ generic_table(evaluasi.get("evaluasi_kepatuhan_apa_7")) }}
+                {% endif %}
+                {% if evaluasi.get("daftar_perbaikan_yang_direkomendasikan") %}
+                  <h3>Perbaikan yang Direkomendasikan</h3>
+                  <ul>{% for item in evaluasi.get("daftar_perbaikan_yang_direkomendasikan", []) %}<li>{{ item }}</li>{% endfor %}</ul>
+                {% endif %}
+              </section>
+            {% endif %}
           </div>
         </section>
       {% endif %}
@@ -170,7 +507,7 @@
         {% set selected_dois = references.get("referensi_dipilih", []) | map(attribute="doi") | list %}
         <section class="methodology-block">
           <div class="methodology-heading">
-            <p class="eyebrow">Tahap 8</p>
+            <p class="eyebrow">Tahap 10</p>
             <h1>Rekomendasi Referensi Tambahan</h1>
             <p class="lead">{{ references.get("catatan_pencarian", "") }}</p>
           </div>
