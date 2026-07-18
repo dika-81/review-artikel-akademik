@@ -14,6 +14,7 @@ from article_structure import extract_article_structure
 from docx_fixtures import (
     CONCEPTUAL_ARTICLE,
     MIXED_METHODS_ARTICLE,
+    NARRATIVE_REVIEW_ARTICLE,
     NO_HEADING_ARTICLE,
     PHENOMENOLOGY_ARTICLE,
     PTK_ARTICLE,
@@ -43,6 +44,7 @@ def profile_for(paragraphs, tmp_path, name):
         (MIXED_METHODS_ARTICLE, "mixed_methods", "mixed.docx"),
         (PTK_ARTICLE, "ptk", "ptk.docx"),
         (RND_ARTICLE, "rnd", "rnd.docx"),
+        (NARRATIVE_REVIEW_ARTICLE, "studi_literatur", "literatur.docx"),
         (SLR_ARTICLE, "slr", "slr.docx"),
         (CONCEPTUAL_ARTICLE, "konseptual", "konseptual.docx"),
     ],

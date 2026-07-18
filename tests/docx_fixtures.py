@@ -97,6 +97,25 @@ SLR_ARTICLE = [
     "Page, M. (2021). The PRISMA 2020 statement. BMJ, 372, n71.",
 ]
 
+NARRATIVE_REVIEW_ARTICLE = [
+    "Pembelajaran Berbasis Permainan di Sekolah Dasar: Studi Literatur",
+    "Abstrak",
+    "Studi literatur ini menelaah manfaat dan keterbatasan pembelajaran berbasis permainan.",
+    "Kata kunci: studi literatur, permainan, sekolah dasar",
+    "Pendahuluan",
+    "Pembelajaran berbasis permainan banyak digunakan untuk meningkatkan keterlibatan siswa.",
+    "Metode Penelitian",
+    "Kajian literatur dilakukan terhadap artikel terdahulu dan buku yang relevan. "
+    "Sumber pustaka dipilih berdasarkan keterkaitannya dengan pembelajaran sekolah dasar "
+    "dan disintesis melalui analisis deskriptif.",
+    "Hasil dan Pembahasan",
+    "Sintesis literatur menunjukkan pola peningkatan motivasi dan risiko distraksi.",
+    "Kesimpulan",
+    "Pembelajaran berbasis permainan bermanfaat bila tujuan dan mekanisme umpan balik dirancang jelas.",
+    "Daftar Pustaka",
+    "Plass, J., Homer, B., & Kinzer, C. (2015). Foundations of game-based learning. Educational Psychologist, 50(4), 258-283.",
+]
+
 CONCEPTUAL_ARTICLE = [
     "Rekonseptualisasi Literasi Numerasi dalam Kurikulum Sekolah Dasar: Kajian Teoretis",
     "Abstrak",

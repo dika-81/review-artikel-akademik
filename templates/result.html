@@ -83,30 +83,34 @@
 
     {% macro generic_table(rows) %}
       {% if rows %}
-        <div class="table-scroll">
-          <table class="data-table">
-            <thead>
-              <tr>{% for key in rows[0].keys() %}<th>{{ key|replace("_", " ")|title }}</th>{% endfor %}</tr>
-            </thead>
-            <tbody>
-              {% for row in rows %}
-                <tr>
-                  {% for value in row.values() %}
-                    <td>
-                      {% if value is mapping %}
-                        {% for k, v in value.items() %}<strong>{{ k|replace("_", " ")|title }}:</strong> {{ v }}<br>{% endfor %}
-                      {% elif value is iterable and value is not string %}
-                        {% for item in value %}{{ item }}{% if not loop.last %}; {% endif %}{% endfor %}
-                      {% else %}
-                        {{ value }}
-                      {% endif %}
-                    </td>
-                  {% endfor %}
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
+        {% if rows[0] is mapping %}
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>{% for key in rows[0].keys() %}<th>{{ key|replace("_", " ")|title }}</th>{% endfor %}</tr>
+              </thead>
+              <tbody>
+                {% for row in rows %}
+                  <tr>
+                    {% for value in row.values() %}
+                      <td>
+                        {% if value is mapping %}
+                          {% for k, v in value.items() %}<strong>{{ k|replace("_", " ")|title }}:</strong> {{ v }}<br>{% endfor %}
+                        {% elif value is iterable and value is not string %}
+                          {% for item in value %}{{ item }}{% if not loop.last %}; {% endif %}{% endfor %}
+                        {% else %}
+                          {{ value }}
+                        {% endif %}
+                      </td>
+                    {% endfor %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <ul>{% for row in rows %}<li>{{ row }}</li>{% endfor %}</ul>
+        {% endif %}
       {% endif %}
     {% endmacro %}
 
@@ -440,7 +444,7 @@
 
       {% if result.get("sitasi_apa") %}
         {% set citation = result["sitasi_apa"] %}
-        {% set matching = citation.get("pencocokan", {}) %}
+        {% set matching = citation_groups %}
         <section class="methodology-block">
           <div class="methodology-heading"><p class="eyebrow">Tahap 9</p><h1>Sitasi dan APA 7</h1></div>
           <div class="results">
@@ -463,7 +467,8 @@
               ("referensi_tidak_pernah_disitasi", "Referensi Tidak Pernah Disitasi"),
               ("referensi_duplikat", "Referensi Duplikat"),
               ("referensi_tidak_lengkap", "Referensi Tidak Lengkap"),
-              ("sitasi_sekunder", "Kemungkinan Sitasi Sekunder")
+              ("sitasi_sekunder", "Kemungkinan Sitasi Sekunder"),
+              ("referensi_bermasalah", "Referensi Bermasalah (Hasil Lama)")
             ] %}
               {% set value = matching.get(key, []) %}
               <section class="panel result-section">
@@ -475,6 +480,13 @@
                 {% endif %}
               </section>
             {% endfor %}
+
+            {% if matching.get("catatan_akhir_sitasi") %}
+              <section class="panel result-section final-revision">
+                <h2>Catatan Akhir Sitasi</h2>
+                <p>{{ matching.get("catatan_akhir_sitasi") }}</p>
+              </section>
+            {% endif %}
 
             {% if citation.get("evaluasi_ai") %}
               {% set evaluasi = citation["evaluasi_ai"] %}

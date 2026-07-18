@@ -5,6 +5,7 @@ import json
 import pytest
 
 import app as app_module
+from flask import render_template
 from analysis_schema import (
     ModelJSONError,
     normalize_section_result,
@@ -66,6 +67,28 @@ def test_normalize_section_result_caps_findings_at_15():
     assert len(result["masalah_teridentifikasi"]) == 15
     assert len(result["masalah_tambahan_ringkas"]) == 5
     assert any("melebihi" in note for note in result["catatan_data_yang_harus_dilengkapi"])
+
+
+def test_normalize_section_result_never_hides_critical_or_major_findings():
+    data = {
+        "masalah_teridentifikasi": [
+            {"prioritas": "kritis", "masalah": f"masalah penting {i}"}
+            for i in range(18)
+        ]
+        + [
+            {"prioritas": "minor", "masalah": f"masalah minor {i}"}
+            for i in range(3)
+        ]
+    }
+    result = normalize_section_result(data, "MET", "Metodologi")
+    findings = result["masalah_teridentifikasi"]
+    assert len(findings) == 18
+    assert all(finding["prioritas"] == "kritis" for finding in findings)
+    assert len(result["masalah_tambahan_ringkas"]) == 3
+    assert any(
+        "seluruhnya tetap dipertahankan" in note
+        for note in result["catatan_data_yang_harus_dilengkapi"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +277,7 @@ def test_abstract_prompt_contains_methodology_context(tmp_path):
     context = app_module._abstract_context(structure)
     assert "kuasi eksperimen" in context
     assert "Metodologi" in context
+    assert "[MET-P01-S01]" in context
 
 
 def test_conclusion_prompt_contains_results_context(tmp_path):
@@ -325,3 +349,175 @@ def test_finalize_filters_irrelevant_findings_for_qualitative(tmp_path):
     assert all("normalitas" not in m.lower() for m in kept_ids)
     assert final["masalah_dikecualikan"]
     assert "tidak diterapkan" in final["masalah_dikecualikan"][0]["status_kriteria"]
+
+
+@pytest.mark.parametrize(
+    "type_key, expected_prompt_text",
+    [
+        ("kuantitatif_eksperimen", "uji asumsi/prasyarat"),
+        ("kualitatif_studi_kasus", "refleksivitas peneliti"),
+        ("mixed_methods", "titik integrasi"),
+        ("ptk", "rancangan siklus"),
+        ("rnd", "validasi ahli"),
+        ("studi_literatur", "risiko cherry-picking"),
+        ("slr", "string pencarian"),
+        ("konseptual", "proposisi"),
+    ],
+)
+def test_methodology_route_uses_adaptive_prompt_for_required_article_types(
+    client, monkeypatch, tmp_path, type_key, expected_prompt_text
+):
+    register_and_login(client)
+    set_valid_api_key(client, monkeypatch, FAKE_KEY)
+    output_name = upload_article(client, tmp_path)
+    saved_path = next(app_module.OUTPUT_DIR.glob(f"*/{output_name}"))
+    result = json.loads(saved_path.read_text(encoding="utf-8"))
+    result.update(
+        {
+            "_jenis_artikel_pilihan": type_key,
+            "profil_artikel": {
+                "klasifikasi_artikel": {"jenis_artikel": type_key}
+            },
+            "judul": {"judul_rekomendasi": "Judul"},
+            "abstrak": {"versi_revisi": "Abstrak"},
+            "pendahuluan": {"versi_revisi": "Pendahuluan"},
+        }
+    )
+    saved_path.write_text(
+        json.dumps(result, ensure_ascii=False), encoding="utf-8"
+    )
+    prompts_seen = []
+
+    def fake_openai_json(system_prompt, user_prompt):
+        prompts_seen.append(user_prompt)
+        return {
+            "ringkasan": "Prompt metodologi terhubung.",
+            "masalah_teridentifikasi": [],
+        }
+
+    monkeypatch.setattr(app_module, "openai_chat_json", fake_openai_json)
+    response = client.post(
+        "/analyze-methodology",
+        data={"filename": "artikel.docx", "output_name": output_name},
+    )
+
+    assert response.status_code == 200
+    assert prompts_seen
+    assert "analisis METODOLOGI" in prompts_seen[0]
+    assert expected_prompt_text.lower() in prompts_seen[0].lower()
+    saved = json.loads(saved_path.read_text(encoding="utf-8"))
+    assert saved["metodologi"]["ringkasan"] == "Prompt metodologi terhubung."
+
+
+def test_all_ai_stage_routes_call_their_detailed_prompt(client, monkeypatch, tmp_path):
+    register_and_login(client)
+    set_valid_api_key(client, monkeypatch, FAKE_KEY)
+    output_name = upload_article(client, tmp_path)
+    prompts_seen = []
+
+    def fake_openai_json(system_prompt, user_prompt):
+        prompts_seen.append(user_prompt)
+        if "identifikasi jenis artikel" in user_prompt:
+            return {
+                "klasifikasi_artikel": {
+                    "jenis_artikel": "kuantitatif_eksperimen",
+                    "tingkat_keyakinan": "tinggi",
+                    "bukti_teks": [],
+                }
+            }
+        if "evaluasi JUDUL" in user_prompt:
+            return {
+                "judul_awal": "Judul",
+                "judul_rekomendasi": "Judul rekomendasi",
+                "masalah_teridentifikasi": [],
+            }
+        return {
+            "ringkasan": "Prompt rinci dipanggil.",
+            "masalah_teridentifikasi": [],
+        }
+
+    monkeypatch.setattr(app_module, "openai_chat_json", fake_openai_json)
+    routes = [
+        "/analyze-profile",
+        "/analyze-title",
+        "/analyze-abstract",
+        "/analyze-introduction",
+        "/analyze-methodology",
+        "/analyze-results-discussion",
+        "/analyze-conclusion",
+        "/analyze-cross-section",
+        "/analyze-reference-citation",
+    ]
+    for route in routes:
+        response = client.post(
+            route,
+            data={"filename": "artikel.docx", "output_name": output_name},
+        )
+        assert response.status_code == 200
+
+    expected_signatures = [
+        "identifikasi jenis artikel",
+        "evaluasi JUDUL",
+        "analisis ABSTRAK",
+        "analisis PENDAHULUAN",
+        "analisis METODOLOGI",
+        "analisis HASIL dan PEMBAHASAN",
+        "analisis KESIMPULAN",
+        "KESELARASAN LINTAS BAGIAN",
+        "jelaskan temuan pencocokan",
+    ]
+    combined = "\n".join(prompts_seen)
+    for signature in expected_signatures:
+        assert signature in combined
+    cross_prompt = next(
+        prompt for prompt in prompts_seen if "KESELARASAN LINTAS BAGIAN" in prompt
+    )
+    assert "[AWL-P01-S01]" in cross_prompt
+    assert "[MET-P01-S01]" in cross_prompt
+
+
+def test_legacy_results_keep_download_and_citation_display(flask_app, tmp_path):
+    legacy_result = {
+        "_uploaded": True,
+        "_filename": "lama.docx",
+        "judul": {"judul_rekomendasi": "Judul lama"},
+        "abstrak": {"abstrak_revisi": "Abstrak lama"},
+        "pendahuluan": {"pendahuluan_revisi": "Pendahuluan lama"},
+        "metodologi": {"metodologi_revisi": "Metodologi lama"},
+        "hasil_pembahasan": {
+            "hasil_pembahasan_revisi": "Hasil dan pembahasan lama"
+        },
+        "kesimpulan": {"kesimpulan_revisi": "Kesimpulan lama"},
+        "sitasi_apa": {
+            "sitasi_tanpa_referensi": [
+                {"sitasi": "Sumberlama (2020)", "catatan": "Belum ada referensi"}
+            ],
+            "referensi_tidak_disitasi": ["Referensi Lama (2019)."],
+            "referensi_bermasalah": [
+                {"referensi_asli": "Entri Lama", "masalah": "Format belum lengkap"}
+            ],
+            "catatan_akhir_sitasi": "Catatan sitasi hasil lama tetap terlihat.",
+        },
+        "referensi_tambahan": {"rekomendasi": [], "referensi_dipilih": []},
+    }
+
+    assert app_module.is_review_complete(legacy_result)
+    groups = app_module.citation_groups_for_display(legacy_result["sitasi_apa"])
+    assert groups["referensi_tidak_pernah_disitasi"] == [
+        "Referensi Lama (2019)."
+    ]
+    with flask_app.test_request_context("/"):
+        html = render_template(
+            "result.html",
+            **app_module.result_template_context(
+                "lama.docx", "lama.json", legacy_result
+            ),
+        )
+    assert "Sumberlama (2020)" in html
+    assert "Entri Lama" in html
+    assert "Catatan sitasi hasil lama tetap terlihat." in html
+    assert "Unduh Laporan PDF" in html
+    pdf_path = tmp_path / "legacy.pdf"
+    app_module.build_review_pdf(legacy_result, pdf_path)
+    assert pdf_path.exists()
+    assert pdf_path.stat().st_size > 1000

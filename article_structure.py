@@ -398,6 +398,25 @@ def format_section_for_prompt(section, max_chars=None):
     return "\n\n".join(lines)
 
 
+def format_section_tail_for_prompt(section, max_chars):
+    """Format paragraf-paragraf terakhir tanpa kehilangan ID lokasi aslinya."""
+    if not section or not section["paragraphs"]:
+        return "(bagian tidak terdeteksi atau kosong)"
+    selected = []
+    total = 0
+    for paragraph in reversed(section["paragraphs"]):
+        selected.append(paragraph)
+        total += len(paragraph["text"])
+        if total >= max_chars:
+            break
+    tail_section = {
+        **section,
+        "paragraphs": list(reversed(selected)),
+        "tables": [],
+    }
+    return format_section_for_prompt(tail_section)
+
+
 # ---------------------------------------------------------------------------
 # Pencarian dan validasi kutipan
 # ---------------------------------------------------------------------------

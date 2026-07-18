@@ -218,18 +218,41 @@ def normalize_section_result(data, section_code, section_label):
     ]
     findings = sort_findings(findings)
     if len(findings) > MAX_FINDINGS_PER_SECTION:
-        overflow = findings[MAX_FINDINGS_PER_SECTION:]
-        findings = findings[:MAX_FINDINGS_PER_SECTION]
         notes = _as_list(result.get("catatan_data_yang_harus_dilengkapi"))
-        notes.append(
-            f"{len(overflow)} masalah minor tambahan digabungkan karena melebihi "
-            f"batas {MAX_FINDINGS_PER_SECTION} masalah utama per bagian."
-        )
-        result["catatan_data_yang_harus_dilengkapi"] = notes
-        result["masalah_tambahan_ringkas"] = [
-            {"id": f.get("id"), "masalah": f.get("masalah"), "prioritas": f.get("prioritas")}
-            for f in overflow
+        critical_and_major = [
+            finding
+            for finding in findings
+            if finding.get("prioritas") in ("kritis", "mayor")
         ]
+        if len(critical_and_major) > MAX_FINDINGS_PER_SECTION:
+            overflow = [
+                finding
+                for finding in findings
+                if finding.get("prioritas") == "minor"
+            ]
+            findings = critical_and_major
+            notes.append(
+                f"Jumlah masalah kritis/mayor ({len(critical_and_major)}) melebihi "
+                f"batas ringkas {MAX_FINDINGS_PER_SECTION}; seluruhnya tetap "
+                "dipertahankan agar tidak menyembunyikan temuan penting."
+            )
+        else:
+            overflow = findings[MAX_FINDINGS_PER_SECTION:]
+            findings = findings[:MAX_FINDINGS_PER_SECTION]
+            notes.append(
+                f"{len(overflow)} masalah minor tambahan diringkas karena melebihi "
+                f"batas {MAX_FINDINGS_PER_SECTION} masalah utama per bagian."
+            )
+        result["catatan_data_yang_harus_dilengkapi"] = notes
+        if overflow:
+            result["masalah_tambahan_ringkas"] = [
+                {
+                    "id": finding.get("id"),
+                    "masalah": finding.get("masalah"),
+                    "prioritas": finding.get("prioritas"),
+                }
+                for finding in overflow
+            ]
     result["masalah_teridentifikasi"] = findings
     result["jumlah_masalah"] = count_by_priority(findings)
 

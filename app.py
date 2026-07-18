@@ -23,7 +23,6 @@ from flask_login import (
     LoginManager,
     UserMixin,
     current_user,
-    login_required,
     login_user,
     logout_user,
 )
@@ -63,9 +62,9 @@ from article_profile import (
     filter_false_positive_findings,
 )
 from article_structure import (
-    MAX_ARTICLE_CHARS,
     extract_article_structure,
     format_section_for_prompt,
+    format_section_tail_for_prompt,
     get_section,
     locate_quote,
     validate_findings_quotes,
@@ -354,6 +353,17 @@ WORKFLOW_STEPS = [
         "label": "Rekomendasi Referensi Tambahan",
     },
 ]
+
+LEGACY_WORKFLOW_KEYS = (
+    "judul",
+    "abstrak",
+    "pendahuluan",
+    "metodologi",
+    "hasil_pembahasan",
+    "kesimpulan",
+    "sitasi_apa",
+    "referensi_tambahan",
+)
 
 SECTION_STAGE_META = {
     "abstrak": ("ABS", "Abstrak"),
@@ -698,9 +708,9 @@ def _abstract_context(structure):
         ("kesimpulan", "Kesimpulan"),
     ):
         section = get_section(structure, key)
-        text = (section or {}).get("text", "")
+        text = format_section_for_prompt(section, max_chars=7000)
         blocks.append(
-            f"{label}:\n\"\"\"{text[:7000] if text else '(tidak terdeteksi)'}\"\"\""
+            f"{label}:\n\"\"\"{text}\"\"\""
         )
     title = detect_title(structure).get("title", "")
     return f"Judul:\n\"\"\"{title}\"\"\"\n\n" + "\n\n".join(blocks)
@@ -724,10 +734,16 @@ def stage_abstract(structure, result):
 def stage_introduction(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
     intro_section = get_section(structure, "pendahuluan")
+    abstract_context = format_section_for_prompt(
+        get_section(structure, "abstrak"), max_chars=3000
+    )
+    methodology_context = format_section_for_prompt(
+        get_section(structure, "metodologi"), max_chars=3000
+    )
     context = (
         f"Judul: {detect_title(structure).get('title', '')}\n\n"
-        f"Abstrak:\n\"\"\"{(get_section(structure, 'abstrak') or {}).get('text', '')[:3000]}\"\"\"\n\n"
-        f"Metodologi (ringkas):\n\"\"\"{(get_section(structure, 'metodologi') or {}).get('text', '')[:3000]}\"\"\""
+        f"Abstrak:\n\"\"\"{abstract_context}\"\"\"\n\n"
+        f"Metodologi (ringkas):\n\"\"\"{methodology_context}\"\"\""
     )
     data = analyze_section_with_batches(
         intro_section,
@@ -747,11 +763,17 @@ def stage_introduction(structure, result):
 def stage_methodology(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
     method_section = get_section(structure, "metodologi")
+    abstract_context = format_section_for_prompt(
+        get_section(structure, "abstrak"), max_chars=3000
+    )
+    introduction_context = format_section_tail_for_prompt(
+        get_section(structure, "pendahuluan"), max_chars=3000
+    )
     context = (
         f"Judul: {detect_title(structure).get('title', '')}\n\n"
-        f"Abstrak:\n\"\"\"{(get_section(structure, 'abstrak') or {}).get('text', '')[:3000]}\"\"\"\n\n"
+        f"Abstrak:\n\"\"\"{abstract_context}\"\"\"\n\n"
         f"Pendahuluan (bagian akhir, biasanya memuat tujuan):\n"
-        f"\"\"\"{(get_section(structure, 'pendahuluan') or {}).get('text', '')[-3000:]}\"\"\""
+        f"\"\"\"{introduction_context}\"\"\""
     )
     data = analyze_section_with_batches(
         method_section,
@@ -775,9 +797,12 @@ def stage_results_discussion(structure, result):
         + table["text"][:2500]
         for table in structure.get("tables", [])
     )
+    methodology_context = format_section_for_prompt(
+        get_section(structure, "metodologi"), max_chars=5000
+    )
     context = (
         f"Judul: {detect_title(structure).get('title', '')}\n\n"
-        f"Metodologi (ringkas):\n\"\"\"{(get_section(structure, 'metodologi') or {}).get('text', '')[:5000]}\"\"\""
+        f"Metodologi (ringkas):\n\"\"\"{methodology_context}\"\"\""
     )
     data = analyze_section_with_batches(
         section,
@@ -802,10 +827,12 @@ def stage_results_discussion(structure, result):
 def stage_conclusion(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
     conclusion_section = get_section(structure, "kesimpulan")
-    results_text = (get_section(structure, "hasil_pembahasan") or {}).get("text", "")
+    results_text = format_section_for_prompt(
+        get_section(structure, "hasil_pembahasan"), max_chars=9000
+    )
     context = (
         f"Judul: {detect_title(structure).get('title', '')}\n\n"
-        f"Hasil dan pembahasan (sumber klaim):\n\"\"\"{results_text[:9000]}\"\"\""
+        f"Hasil dan pembahasan (sumber klaim):\n\"\"\"{results_text}\"\"\""
     )
     data = openai_chat_json(
         SYSTEM_ANALYST,
@@ -822,11 +849,21 @@ def stage_conclusion(structure, result):
 def stage_cross_section(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
     section_texts = []
-    section_texts.append(("Judul", detect_title(structure).get("title", "")))
+    section_texts.append(
+        (
+            "Judul/awal artikel",
+            format_section_for_prompt(
+                structure["sections"].get("awal"), max_chars=2000
+            ),
+        )
+    )
     for key in ("abstrak", "pendahuluan", "metodologi", "hasil_pembahasan", "kesimpulan"):
         section = get_section(structure, key)
         section_texts.append(
-            ((section or {}).get("label", key.title()), (section or {}).get("text", ""))
+            (
+                (section or {}).get("label", key.title()),
+                format_section_for_prompt(section, max_chars=7000),
+            )
         )
     citation_summary = run_citation_check(structure)["pencocokan"]["statistik"]
     data = openai_chat_json(
@@ -1239,6 +1276,41 @@ def article_type_context(result):
     }
 
 
+def citation_groups_for_display(stage_data):
+    """Samakan hasil sitasi skema baru dan hasil WIP lama untuk UI/PDF."""
+    stage_data = stage_data if isinstance(stage_data, dict) else {}
+    matching = stage_data.get("pencocokan")
+    if isinstance(matching, dict):
+        return {
+            "statistik": matching.get("statistik", {}),
+            "sitasi_tanpa_referensi": matching.get("sitasi_tanpa_referensi", []),
+            "tahun_tidak_cocok": matching.get("tahun_tidak_cocok", []),
+            "kemungkinan_cocok": matching.get("kemungkinan_cocok", []),
+            "referensi_tidak_pernah_disitasi": matching.get(
+                "referensi_tidak_pernah_disitasi", []
+            ),
+            "referensi_duplikat": matching.get("referensi_duplikat", []),
+            "referensi_tidak_lengkap": matching.get("referensi_tidak_lengkap", []),
+            "sitasi_sekunder": matching.get("sitasi_sekunder", []),
+            "referensi_bermasalah": [],
+            "catatan_akhir_sitasi": "",
+        }
+    return {
+        "statistik": {},
+        "sitasi_tanpa_referensi": stage_data.get("sitasi_tanpa_referensi", []),
+        "tahun_tidak_cocok": [],
+        "kemungkinan_cocok": [],
+        "referensi_tidak_pernah_disitasi": stage_data.get(
+            "referensi_tidak_disitasi", []
+        ),
+        "referensi_duplikat": [],
+        "referensi_tidak_lengkap": [],
+        "sitasi_sekunder": [],
+        "referensi_bermasalah": stage_data.get("referensi_bermasalah", []),
+        "catatan_akhir_sitasi": stage_data.get("catatan_akhir_sitasi", ""),
+    }
+
+
 def result_template_context(filename, output_name, result):
     return {
         "filename": filename,
@@ -1246,6 +1318,7 @@ def result_template_context(filename, output_name, result):
         "review_complete": is_review_complete(result),
         "workflow_steps": get_workflow_steps(result),
         "article_type": article_type_context(result),
+        "citation_groups": citation_groups_for_display(result.get("sitasi_apa")),
         "result": result,
     }
 
@@ -1296,7 +1369,10 @@ def module_is_unlocked(result, module_key):
 
 
 def is_review_complete(result):
-    return all(result.get(step["key"]) for step in WORKFLOW_STEPS)
+    if all(result.get(step["key"]) for step in WORKFLOW_STEPS):
+        return True
+    is_legacy_result = not result.get("_profil_heuristik")
+    return is_legacy_result and all(result.get(key) for key in LEGACY_WORKFLOW_KEYS)
 
 
 def guard_module_order(result, module_key):
@@ -1498,7 +1574,7 @@ def add_stage_to_pdf(story, stage_key, stage_data, styles):
         return
 
     if stage_key == "sitasi_apa":
-        matching = stage_data.get("pencocokan", {})
+        matching = citation_groups_for_display(stage_data)
         for key, label in [
             ("statistik", "Statistik Pencocokan"),
             ("sitasi_tanpa_referensi", "Sitasi Tanpa Referensi"),
@@ -1508,9 +1584,13 @@ def add_stage_to_pdf(story, stage_key, stage_data, styles):
             ("referensi_duplikat", "Referensi Duplikat"),
             ("referensi_tidak_lengkap", "Referensi Tidak Lengkap"),
             ("sitasi_sekunder", "Kemungkinan Sitasi Sekunder"),
+            ("referensi_bermasalah", "Referensi Bermasalah (Hasil Lama)"),
         ]:
             story.append(Paragraph(pdf_safe_text(label), styles["FieldTitle"]))
             add_pdf_value(story, matching.get(key, []), styles)
+        if matching.get("catatan_akhir_sitasi"):
+            story.append(Paragraph("Catatan Akhir Sitasi", styles["FieldTitle"]))
+            add_pdf_value(story, matching["catatan_akhir_sitasi"], styles)
         evaluation = stage_data.get("evaluasi_ai") or {}
         if evaluation:
             story.append(Paragraph("Evaluasi Kualitas Referensi (AI)", styles["FieldTitle"]))
@@ -1562,9 +1642,12 @@ def add_stage_to_pdf(story, stage_key, stage_data, styles):
             story.append(Paragraph(pdf_safe_text(label), styles["FieldTitle"]))
             add_pdf_value(story, stage_data[key], styles)
 
-    if stage_data.get("versi_revisi"):
+    revision = stage_data.get("versi_revisi") or stage_data.get(
+        _LEGACY_REVISION_FIELDS.get(stage_key, "")
+    )
+    if revision:
         story.append(Paragraph("Versi Revisi Utuh", styles["FieldTitle"]))
-        add_pdf_value(story, stage_data["versi_revisi"], styles)
+        add_pdf_value(story, revision, styles)
 
     if stage_data.get("catatan_data_yang_harus_dilengkapi"):
         story.append(
