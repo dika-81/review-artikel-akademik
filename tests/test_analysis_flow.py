@@ -140,7 +140,7 @@ def test_truncated_output_raises_explicit_message(client, monkeypatch):
     register_and_login(client)
     set_valid_api_key(client, monkeypatch, FAKE_KEY)
     monkeypatch.setattr(app_module, "build_user_client", lambda key: FakeClient())
-    monkeypatch.setattr(app_module, "get_session_api_key", lambda: FAKE_KEY)
+    monkeypatch.setattr(app_module, "get_current_user_api_key", lambda: FAKE_KEY)
     with pytest.raises(RuntimeError) as excinfo:
         app_module.call_openai_chat("sys", "user", force_json=True)
     assert "terpotong" in str(excinfo.value)

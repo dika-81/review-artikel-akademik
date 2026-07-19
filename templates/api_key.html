@@ -14,12 +14,12 @@
           <h1>OpenAI API Key</h1>
           <p class="lead">
             Masukkan OpenAI API key milik Anda sendiri untuk memproses analisis artikel.
+            Biaya penggunaan ditanggung oleh akun OpenAI Anda.
           </p>
           <p class="lead note">
-            Key hanya digunakan selama sesi login ini dan disimpan sementara di server
-            (bukan di browser Anda). Key akan otomatis dihapus saat Anda logout atau
-            saat sesi berakhir, dan tidak pernah ditampilkan kembali maupun disimpan
-            permanen. Jangan simpan API key di browser atau membagikannya kepada siapa pun.
+            Key dienkripsi sebelum disimpan di database dan dikaitkan hanya dengan akun
+            Anda. Key tidak disimpan di cookie/browser dan tetap tersedia setelah logout
+            atau login ulang sampai Anda mengganti atau menghapusnya.
           </p>
         </div>
 
@@ -35,8 +35,9 @@
 
         {% if has_api_key %}
           <div class="alert">
-            <p>API key sudah tersimpan untuk sesi ini. Anda dapat langsung menganalisis artikel,
-               atau menghapus key dari sesi melalui tombol di bawah.</p>
+            <p>API key tersimpan untuk akun ini
+               {% if api_key_last_four %}(empat karakter terakhir: ••••{{ api_key_last_four }}){% endif %}.
+               Anda dapat langsung menganalisis artikel, mengganti key, atau menghapusnya.</p>
           </div>
           <div class="review-actions">
             <a class="secondary-button" href="{{ url_for('index') }}">Lanjut ke Analisis</a>
@@ -67,7 +68,7 @@
             <input type="checkbox" id="toggle-key" style="width:auto;">
             Tampilkan key
           </label>
-          <button type="submit">Simpan untuk Sesi Ini</button>
+          <button type="submit">{% if has_api_key %}Ganti API Key{% else %}Simpan API Key{% endif %}</button>
         </form>
 
         <form action="{{ url_for('logout') }}" method="post" class="upload-form">

@@ -3,24 +3,24 @@ services:
     name: revisi-artikel
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    branch: main
+    buildCommand: pip install -r requirements.txt && flask --app app init-db
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 360 app:app
     healthCheckPath: /healthz
     envVars:
-      - key: SECRET_KEY
+      - key: FLASK_SECRET_KEY
         generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: API_KEY_ENCRYPTION_KEY
+        sync: false
       - key: FLASK_ENV
         value: production
       - key: SESSION_TYPE
-        value: filesystem
+        value: sqlalchemy
       - key: SESSION_LIFETIME_MINUTES
         value: "120"
       - key: OPENAI_MODEL
         value: gpt-5.6
       - key: OPENAI_TIMEOUT_SECONDS
         value: "300"
-      # Aktifkan Redis untuk session production yang tahan restart/multi-instance:
-      # ubah SESSION_TYPE menjadi "redis" dan isi REDIS_URL dari Render Key Value
-      # (atau layanan Redis eksternal seperti Upstash).
-      # - key: REDIS_URL
-      #   sync: false

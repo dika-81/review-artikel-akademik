@@ -1,15 +1,17 @@
 # Reviu Artikel Ilmiah AI
 
 Aplikasi web Flask untuk menganalisis dan merevisi artikel ilmiah `.docx`
-dengan OpenAI Responses API. Setiap pengguna memakai API key OpenAI miliknya
-sendiri; key disimpan sementara di server-side session dan dihapus saat logout
-atau sesi berakhir.
+dengan OpenAI Responses API. Arsitekturnya BYOK murni: setiap pengguna memakai
+API key OpenAI miliknya sendiri dan menanggung biaya pada akun masing-masing.
+Key dienkripsi di backend, dikaitkan dengan `user_id`, dan tetap tersedia setelah
+logout/login ulang sampai pengguna mengganti atau menghapusnya.
 
 ## Fitur utama
 
-- Registrasi/login, password ter-hash, proteksi CSRF, cookie aman, dan
-  `Cache-Control: no-store`.
-- Isolasi file unggahan, hasil JSON, PDF, session, dan API key per pengguna.
+- Registrasi/login dengan akun PostgreSQL persisten di production, password
+  ter-hash, proteksi CSRF, cookie aman, dan `Cache-Control: no-store`.
+- Isolasi file unggahan, hasil JSON, PDF, session, dan ciphertext API key per
+  pengguna. Tidak ada API key administrator atau fallback key bersama.
 - Ekstraksi DOCX terstruktur menjadi bagian, paragraf, kalimat, dan tabel dengan
   ID lokasi stabil seperti `MET-P02-S01`.
 - Deteksi jenis artikel berbasis beberapa dimensi bukti, dapat dikoreksi oleh
@@ -71,12 +73,15 @@ keselarasan antarbagiannya dengan bukti ber-ID dari kedua sisi.
 ├── requirements.txt
 ├── render.yaml
 ├── .env.example
+├── migrations/
+│   └── 001_auth_session_and_encrypted_api_keys.sql
 ├── static/
 │   └── styles.css
 ├── templates/
 │   ├── login.html
 │   ├── register.html
 │   ├── api_key.html
+│   ├── csrf_error.html
 │   ├── index.html
 │   └── result.html
 └── tests/
@@ -107,18 +112,29 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-3. Salin `.env.example` menjadi `.env`, lalu ganti `SECRET_KEY`.
+3. Salin `.env.example` menjadi `.env`, lalu ganti `FLASK_SECRET_KEY`. Untuk
+   menguji data API key yang bertahan antar-restart lokal, buat juga
+   `API_KEY_ENCRYPTION_KEY`.
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Jangan menaruh `OPENAI_API_KEY` dalam `.env`; pengguna memasukkan key miliknya
-sendiri setelah login.
+File `.env` diabaikan Git. Jangan pernah menaruh nilai rahasia di file yang
+di-commit atau menyalinnya ke issue/log.
 
-4. Jalankan aplikasi.
+Fernet key dapat dibuat secara lokal dengan:
 
 ```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Salin hasilnya hanya ke `.env` lokal yang tidak dilacak atau secret manager host.
+
+4. Inisialisasi database lokal satu kali, lalu jalankan aplikasi.
+
+```powershell
+flask --app app init-db
 python app.py
 ```
 
@@ -136,33 +152,65 @@ Pemanggilan OpenAI dalam test di-mock sehingga tidak memakai saldo API.
 
 | Variabel | Wajib | Keterangan |
 | --- | --- | --- |
-| `SECRET_KEY` | Ya di production | Kunci penandatangan session cookie; gunakan nilai acak panjang. |
-| `FLASK_ENV` | Tidak | `development` untuk lokal; `production` adalah default. |
-| `SESSION_TYPE` | Tidak | `filesystem` (default) atau `redis`. |
-| `REDIS_URL` | Jika Redis | URL Redis untuk session server-side. |
+| `FLASK_SECRET_KEY` | Ya di production | Rahasia. Kunci tetap untuk session dan CSRF; gunakan nilai acak panjang dan jangan diganti setiap deploy. `SECRET_KEY` didukung sebagai alias kompatibilitas. |
+| `DATABASE_URL` | Ya di production | Rahasia karena berisi kredensial. Dapat menunjuk ke Render, Supabase, atau PostgreSQL eksternal lain. Awalan lama `postgres://` dinormalisasi otomatis. |
+| `API_KEY_ENCRYPTION_KEY` | Ya di production | Rahasia Fernet untuk mengenkripsi/dekripsi key pengguna. Jangan ganti tanpa prosedur rotasi/re-enkripsi data. |
+| `FLASK_ENV` | Ya di Render | Set `production`; jika tidak diatur, aplikasi menganggap development lokal. |
+| `FLASK_DEBUG` | Tidak | Default `0`. Jangan aktifkan di production karena debugger interaktif dapat mengekspos data request. |
+| `SESSION_TYPE` | Ya di production | Gunakan `sqlalchemy` agar session tersimpan di PostgreSQL; `cachelib` hanya untuk lokal. |
 | `SESSION_LIFETIME_MINUTES` | Tidak | Umur session, default 120 menit. |
 | `OPENAI_MODEL` | Tidak | Model OpenAI, default `gpt-5.6`. |
 | `OPENAI_TIMEOUT_SECONDS` | Tidak | Timeout request OpenAI, default 300 detik. |
 | `OPENAI_MAX_OUTPUT_TOKENS` | Tidak | Batas keluaran tiap request analisis, default 16000. |
 | `SECTION_CHUNK_CHARS` | Tidak | Target maksimum karakter per batch paragraf, default 20000. |
 | `SCHOLARLY_API_EMAIL` | Tidak | Email kontak untuk Crossref/OpenAlex. |
-| `DATABASE_PATH` | Tidak | Lokasi SQLite akun, default `instance/app.db`. |
+| `DATABASE_PATH` | Lokal saja | Lokasi SQLite development/test, default `instance/app.db`. Di production nilai ini tidak dipakai. |
 
-`OPENAI_API_KEY` milik pemilik aplikasi tidak diperlukan.
+Aplikasi sengaja tidak membaca atau membutuhkan `OPENAI_API_KEY` administrator.
+Setiap panggilan OpenAI mendekripsi key milik `current_user.id` di backend tepat
+sebelum membuat client OpenAI.
 
 ## Deployment
 
 `render.yaml` dapat dipakai sebagai Blueprint Render. Konfigurasi pokok:
 
-- build command: `pip install -r requirements.txt`;
-- start command: `gunicorn app:app`;
+- build command: `pip install -r requirements.txt && flask --app app init-db`;
+- start command: `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 360 app:app`;
 - health check: `/healthz`;
-- environment minimum: `SECRET_KEY`, `FLASK_ENV=production`, dan
-  `OPENAI_MODEL`.
+- branch: `main`;
+- `DATABASE_URL` dan `API_KEY_ENCRYPTION_KEY` diisi manual sebagai secret;
+- session production memakai tabel PostgreSQL (`SESSION_TYPE=sqlalchemy`);
+- secret `FLASK_SECRET_KEY` dibuat sekali oleh Blueprint;
+- tidak ada resource database yang diikat oleh Blueprint, sehingga
+  `DATABASE_URL` dapat memakai PostgreSQL eksternal seperti Supabase;
+- setiap build menjalankan `flask --app app init-db` setelah dependency terpasang;
+  perintah ini aman dijalankan ulang dan hanya membuat tabel yang belum ada.
 
-Untuk production, gunakan `SESSION_TYPE=redis` dan `REDIS_URL`. Filesystem
-Render bersifat ephemeral; gunakan disk/database persisten bila akun, unggahan,
-dan hasil analisis harus bertahan setelah redeploy.
+## Inisialisasi/migrasi database
+
+Build Render otomatis menjalankan perintah berikut dengan kredensial database
+yang disimpan di environment:
+
+```powershell
+pip install -r requirements.txt && flask --app app init-db
+```
+
+Untuk inisialisasi/migrasi manual, jalankan `flask --app app init-db` atau
+[`migrations/001_auth_session_and_encrypted_api_keys.sql`](migrations/001_auth_session_and_encrypted_api_keys.sql)
+melalui SQL editor/`psql` milik penyedia PostgreSQL.
+
+Keduanya idempoten dan hanya memakai `CREATE ... IF NOT EXISTS`; tidak ada
+`DROP`, `TRUNCATE`, reset, atau delete massal. Migrasi membuat tabel `users`,
+`sessions`, dan `user_api_keys`. Build command tidak mencetak environment
+variable atau nilai secret.
+
+Filesystem Render bersifat ephemeral. Karena itu akun dan session berada di
+PostgreSQL, bukan SQLite atau `flask_session/`. File unggahan, hasil JSON, dan
+PDF saat ini masih berada di filesystem lokal sehingga tetap dapat hilang
+ketika Free Web Service tidur, restart, atau redeploy; gunakan object storage
+jika artefak tersebut juga harus permanen. Jangan mengandalkan Render Free
+PostgreSQL untuk data permanen karena database tersebut kedaluwarsa; gunakan
+PostgreSQL eksternal/berbayar dan backup terjadwal untuk penggunaan sungguhan.
 
 ## Catatan kualitas dan keamanan
 
@@ -173,4 +221,9 @@ dan hasil analisis harus bertahan setelah redeploy.
   memakai placeholder dan ditandai memerlukan data penulis.
 - Kualitas evaluasi tetap dipengaruhi model yang dipilih dan kualitas struktur
   artikel. Validasi kutipan adalah pengaman, bukan pengganti verifikasi penulis.
-- API key tidak ditulis ke database, file, log, HTML, atau cookie browser.
+- API key pengguna hanya disimpan sebagai ciphertext Fernet di tabel
+  `user_api_keys`; plaintext tidak masuk session, cookie, HTML, JavaScript, URL,
+  log, atau repository.
+- Halaman akun hanya menampilkan status tersimpan dan empat karakter terakhir.
+- Kehilangan atau mengganti `API_KEY_ENCRYPTION_KEY` tanpa re-enkripsi membuat
+  ciphertext lama tidak dapat dipakai.

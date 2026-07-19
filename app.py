@@ -1,12 +1,17 @@
+import base64
+import hashlib
 import json
+import logging
 import os
-import sqlite3
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
-from pathlib import Path
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
+import click
 import openai
+from cachelib.file import FileSystemCache
+from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -27,7 +32,14 @@ from flask_login import (
     logout_user,
 )
 from flask_session import Session
-from flask_wtf.csrf import CSRFProtect
+from flask_session.base import ServerSideSessionInterface
+from flask_session.defaults import Defaults as SessionDefaults
+from flask_session.sqlalchemy.sqlalchemy import (
+    SqlAlchemySessionInterface,
+    create_session_model,
+)
+from flask_sqlalchemy import SQLAlchemy
+from flask_wtf.csrf import CSRFError, CSRFProtect
 import httpx
 from openai import OpenAI
 from reportlab.lib import colors
@@ -41,6 +53,8 @@ from reportlab.platypus import (
     Spacer,
 )
 from xml.sax.saxutils import escape
+from sqlalchemy.exc import IntegrityError
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -82,31 +96,186 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = BASE_DIR / "output"
 INSTANCE_DIR = BASE_DIR / "instance"
 ALLOWED_EXTENSIONS = {".docx"}
-API_KEY_SESSION_FIELD = "openai_api_key"
 
 load_dotenv()
 
-IS_PRODUCTION = os.getenv("FLASK_ENV", "production").lower() != "development"
+ENVIRONMENT = os.getenv("FLASK_ENV", "development").strip().lower()
+IS_RENDER = bool(os.getenv("RENDER"))
+IS_PRODUCTION = IS_RENDER or ENVIRONMENT == "production"
+
+# Jangan izinkan log debug HTTP/SDK mencatat detail request atau Authorization.
+for noisy_logger in ("openai", "httpx", "httpcore"):
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
+
+def get_secret_key():
+    """Return a stable secret; production must provide it explicitly."""
+    secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("SECRET_KEY")
+    if secret_key:
+        return secret_key
+    if IS_PRODUCTION:
+        raise RuntimeError(
+            "Konfigurasi production tidak lengkap: set FLASK_SECRET_KEY "
+            "(atau SECRET_KEY) ke nilai acak yang tetap di environment."
+        )
+    return "dev-secret-change-me"
+
+
+def normalize_database_url(database_url):
+    """Normalize legacy PostgreSQL URLs for SQLAlchemy."""
+    if database_url.startswith("postgres://"):
+        return "postgresql://" + database_url[len("postgres://") :]
+    return database_url
+
+
+def get_sqlalchemy_database_url(database_url):
+    """Select the installed psycopg 3 driver without changing DATABASE_URL."""
+    normalized_url = normalize_database_url(database_url)
+    if normalized_url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + normalized_url[len("postgresql://") :]
+    return normalized_url
+
+
+def get_database_url():
+    """Use PostgreSQL in production and SQLite only for local development."""
+    database_url = (os.getenv("DATABASE_URL") or "").strip()
+    if database_url:
+        normalized_url = normalize_database_url(database_url)
+        if IS_PRODUCTION and normalized_url.startswith("sqlite"):
+            raise RuntimeError(
+                "Konfigurasi production tidak aman: DATABASE_URL harus menunjuk "
+                "ke PostgreSQL, bukan SQLite/file lokal."
+            )
+        return get_sqlalchemy_database_url(normalized_url)
+
+    if IS_PRODUCTION:
+        raise RuntimeError(
+            "Konfigurasi production tidak lengkap: DATABASE_URL PostgreSQL wajib "
+            "diatur. Aplikasi tidak akan fallback ke SQLite di production."
+        )
+
+    database_path = Path(os.getenv("DATABASE_PATH", INSTANCE_DIR / "app.db"))
+    return f"sqlite:///{database_path.resolve().as_posix()}"
+
+
+def get_session_type():
+    """Select a persistent session backend in production."""
+    session_type = os.getenv(
+        "SESSION_TYPE", "sqlalchemy" if IS_PRODUCTION else "cachelib"
+    ).strip().lower()
+    if IS_PRODUCTION and session_type in {"filesystem", "cachelib"}:
+        raise RuntimeError(
+            "Konfigurasi production tidak aman: SESSION_TYPE filesystem/cachelib "
+            "menggunakan filesystem ephemeral. Gunakan SESSION_TYPE=sqlalchemy."
+        )
+    return session_type
+
+
+def get_api_key_encryption_key(secret_key):
+    """Load the Fernet key; derive a stable dev-only key when not in production."""
+    encryption_key = (os.getenv("API_KEY_ENCRYPTION_KEY") or "").strip()
+    if not encryption_key:
+        if IS_PRODUCTION:
+            raise RuntimeError(
+                "Konfigurasi production tidak lengkap: API_KEY_ENCRYPTION_KEY "
+                "wajib diatur untuk mengenkripsi API key pengguna."
+            )
+        digest = hashlib.sha256(
+            f"revisi-artikel-dev:{secret_key}".encode("utf-8")
+        ).digest()
+        return base64.urlsafe_b64encode(digest)
+
+    try:
+        key_bytes = encryption_key.encode("ascii")
+        Fernet(key_bytes)
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise RuntimeError(
+            "API_KEY_ENCRYPTION_KEY tidak valid. Gunakan Fernet key URL-safe "
+            "base64 32-byte."
+        ) from exc
+    return key_bytes
+
+
+class MigratedSqlAlchemySessionInterface(SqlAlchemySessionInterface):
+    """Flask-Session SQLAlchemy backend without automatic schema changes."""
+
+    def __init__(self, flask_app, client):
+        self.app = flask_app
+        self.client = client
+        self.sql_session_model = create_session_model(
+            client,
+            flask_app.config.get(
+                "SESSION_SQLALCHEMY_TABLE",
+                SessionDefaults.SESSION_SQLALCHEMY_TABLE,
+            ),
+            flask_app.config.get(
+                "SESSION_SQLALCHEMY_SCHEMA",
+                SessionDefaults.SESSION_SQLALCHEMY_SCHEMA,
+            ),
+            flask_app.config.get(
+                "SESSION_SQLALCHEMY_BIND_KEY",
+                SessionDefaults.SESSION_SQLALCHEMY_BIND_KEY,
+            ),
+            flask_app.config.get(
+                "SESSION_SQLALCHEMY_SEQUENCE",
+                SessionDefaults.SESSION_SQLALCHEMY_SEQUENCE,
+            ),
+        )
+        ServerSideSessionInterface.__init__(
+            self,
+            flask_app,
+            flask_app.config.get(
+                "SESSION_KEY_PREFIX", SessionDefaults.SESSION_KEY_PREFIX
+            ),
+            flask_app.config.get(
+                "SESSION_USE_SIGNER", SessionDefaults.SESSION_USE_SIGNER
+            ),
+            flask_app.config.get(
+                "SESSION_PERMANENT", SessionDefaults.SESSION_PERMANENT
+            ),
+            flask_app.config.get(
+                "SESSION_ID_LENGTH", SessionDefaults.SESSION_ID_LENGTH
+            ),
+            flask_app.config.get(
+                "SESSION_SERIALIZATION_FORMAT",
+                SessionDefaults.SESSION_SERIALIZATION_FORMAT,
+            ),
+            flask_app.config.get(
+                "SESSION_CLEANUP_N_REQUESTS",
+                SessionDefaults.SESSION_CLEANUP_N_REQUESTS,
+            ),
+        )
+
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY") or os.getenv(
-    "FLASK_SECRET_KEY", "dev-secret-change-me"
-)
+app.config["SECRET_KEY"] = get_secret_key()
+API_KEY_CIPHER = Fernet(get_api_key_encryption_key(app.config["SECRET_KEY"]))
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+app.config["SQLALCHEMY_DATABASE_URI"] = get_database_url()
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+if app.config["SQLALCHEMY_DATABASE_URI"].startswith("postgresql"):
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "pool_pre_ping": True,
+        "pool_recycle": 300,
+    }
 
 # Session server-side: API key pengguna tidak pernah berada di cookie browser,
-# cookie hanya berisi ID session yang ditandatangani.
-app.config["SESSION_TYPE"] = os.getenv("SESSION_TYPE", "filesystem")
+# cookie hanya berisi ID session. Production menyimpan data session di PostgreSQL.
+app.config["SESSION_TYPE"] = get_session_type()
 app.config["SESSION_PERMANENT"] = True
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
     minutes=int(os.getenv("SESSION_LIFETIME_MINUTES", "120"))
 )
 app.config["SESSION_FILE_DIR"] = str(BASE_DIR / "flask_session")
+app.config["SESSION_SQLALCHEMY_TABLE"] = "sessions"
+app.config["SESSION_CLEANUP_N_REQUESTS"] = None
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = IS_PRODUCTION
 app.config["REMEMBER_COOKIE_HTTPONLY"] = True
 app.config["REMEMBER_COOKIE_SECURE"] = IS_PRODUCTION
+app.config["REMEMBER_COOKIE_SAMESITE"] = "Lax"
+app.config["PREFERRED_URL_SCHEME"] = "https" if IS_PRODUCTION else "http"
 
 if app.config["SESSION_TYPE"] == "redis":
     import redis
@@ -115,70 +284,116 @@ if app.config["SESSION_TYPE"] == "redis":
     if not redis_url:
         raise RuntimeError("SESSION_TYPE=redis membutuhkan environment variable REDIS_URL.")
     app.config["SESSION_REDIS"] = redis.from_url(redis_url)
+elif app.config["SESSION_TYPE"] == "cachelib":
+    app.config["SESSION_CACHELIB"] = FileSystemCache(
+        cache_dir=str(BASE_DIR / "flask_session"),
+        threshold=500,
+    )
 
-Session(app)
+db = SQLAlchemy(app)
+if app.config["SESSION_TYPE"] == "sqlalchemy":
+    app.config["SESSION_SQLALCHEMY"] = db
+    app.session_interface = MigratedSqlAlchemySessionInterface(app, db)
+else:
+    Session(app)
 csrf = CSRFProtect(app)
 
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
 login_manager.login_message = "Silakan login terlebih dahulu."
 
+if IS_RENDER:
+    # Render terminates HTTPS at one trusted reverse proxy before Gunicorn.
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 INSTANCE_DIR.mkdir(exist_ok=True)
 
-DATABASE_PATH = Path(os.getenv("DATABASE_PATH", INSTANCE_DIR / "app.db"))
+
+@app.errorhandler(CSRFError)
+def handle_csrf_error(error):
+    """Keep CSRF enabled while returning a useful recovery page."""
+    app.logger.info("CSRF request ditolak: %s", error.description)
+    return (
+        render_template(
+            "csrf_error.html",
+            reason=(
+                "Token keamanan form hilang, kedaluwarsa, atau tidak cocok "
+                "dengan sesi aktif."
+            ),
+            recovery_url=url_for("index")
+            if current_user.is_authenticated
+            else url_for("login"),
+        ),
+        400,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Akun pengguna
 # ---------------------------------------------------------------------------
 
-def get_db():
-    connection = sqlite3.connect(DATABASE_PATH)
-    connection.row_factory = sqlite3.Row
-    return connection
+class User(db.Model, UserMixin):
+    __tablename__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class UserApiKey(db.Model):
+    __tablename__ = "user_api_keys"
+
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ciphertext = db.Column(db.LargeBinary, nullable=False)
+    last_four = db.Column(db.String(4), nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 
 def init_db():
-    with get_db() as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
+    """Create missing tables explicitly; never drop or recreate existing data."""
+    with app.app_context():
+        User.__table__.create(bind=db.engine, checkfirst=True)
+        UserApiKey.__table__.create(bind=db.engine, checkfirst=True)
+        session_model = getattr(app.session_interface, "sql_session_model", None)
+        if session_model is not None:
+            session_model.__table__.create(bind=db.engine, checkfirst=True)
 
 
-init_db()
-
-
-class User(UserMixin):
-    def __init__(self, user_id, username):
-        self.id = str(user_id)
-        self.username = username
+@app.cli.command("init-db")
+def init_db_command():
+    """Create database tables that do not exist yet."""
+    init_db()
+    click.echo("Tabel database siap.")
 
 
 def find_user_row(username):
-    with get_db() as connection:
-        return connection.execute(
-            "SELECT * FROM users WHERE username = ?", (username,)
-        ).fetchone()
+    return db.session.execute(
+        db.select(User).filter_by(username=username)
+    ).scalar_one_or_none()
 
 
 @login_manager.user_loader
 def load_user(user_id):
-    with get_db() as connection:
-        row = connection.execute(
-            "SELECT * FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
-    if row is None:
+    try:
+        return db.session.get(User, int(user_id))
+    except (TypeError, ValueError):
         return None
-    return User(row["id"], row["username"])
 
 
 # ---------------------------------------------------------------------------
@@ -198,15 +413,54 @@ def user_output_dir():
 
 
 # ---------------------------------------------------------------------------
-# API key pengguna di server-side session
+# API key pengguna terenkripsi di database
 # ---------------------------------------------------------------------------
 
-def get_session_api_key():
-    return session.get(API_KEY_SESSION_FIELD)
+def find_user_api_key_record(user_id):
+    return db.session.get(UserApiKey, int(user_id))
 
 
-def clear_session_api_key():
-    session.pop(API_KEY_SESSION_FIELD, None)
+def current_user_api_key_record():
+    if not current_user.is_authenticated:
+        return None
+    return find_user_api_key_record(current_user.id)
+
+
+def store_current_user_api_key(api_key):
+    """Encrypt and upsert only the authenticated user's API key."""
+    if not current_user.is_authenticated:
+        raise RuntimeError("Pengguna harus login untuk menyimpan API key.")
+
+    record = current_user_api_key_record()
+    if record is None:
+        record = UserApiKey(user_id=int(current_user.id))
+        db.session.add(record)
+    record.ciphertext = API_KEY_CIPHER.encrypt(api_key.encode("utf-8"))
+    record.last_four = api_key[-4:]
+    record.updated_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+
+def get_current_user_api_key():
+    """Decrypt only the authenticated user's key immediately before use."""
+    record = current_user_api_key_record()
+    if record is None:
+        return None
+    try:
+        return API_KEY_CIPHER.decrypt(record.ciphertext).decode("utf-8")
+    except (InvalidToken, UnicodeDecodeError) as exc:
+        raise RuntimeError(
+            "API key tersimpan tidak dapat didekripsi. Hubungi administrator "
+            "untuk memeriksa API_KEY_ENCRYPTION_KEY."
+        ) from exc
+
+
+def delete_current_user_api_key():
+    """Delete only the authenticated user's encrypted key record."""
+    record = current_user_api_key_record()
+    if record is not None:
+        db.session.delete(record)
+        db.session.commit()
 
 
 def get_model_name():
@@ -306,8 +560,8 @@ def enforce_access_rules():
         return redirect(url_for("login"))
     if endpoint in NO_API_KEY_REQUIRED_ENDPOINTS:
         return None
-    if not get_session_api_key():
-        flash("Masukkan OpenAI API key Anda terlebih dahulu untuk sesi ini.")
+    if current_user_api_key_record() is None:
+        flash("Masukkan OpenAI API key milik Anda terlebih dahulu.")
         return redirect(url_for("api_key_page"))
     return None
 
@@ -437,10 +691,10 @@ def build_short_article_context(structure):
 # ---------------------------------------------------------------------------
 
 def call_openai_chat(system_prompt, user_prompt, force_json=False):
-    api_key = get_session_api_key()
+    api_key = get_current_user_api_key()
     if not api_key:
         raise RuntimeError(
-            "OpenAI API key belum dimasukkan untuk sesi ini. Silakan isi API key terlebih dahulu."
+            "OpenAI API key belum tersimpan untuk akun ini. Silakan isi API key terlebih dahulu."
         )
 
     client = build_user_client(api_key)
@@ -1878,17 +2132,24 @@ def register():
         elif find_user_row(username) is not None:
             flash("Username sudah terdaftar. Silakan login.")
         else:
-            with get_db() as connection:
-                connection.execute(
-                    "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-                    (
-                        username,
-                        generate_password_hash(password),
-                        datetime.now().isoformat(),
-                    ),
-                )
-            flash("Akun berhasil dibuat. Silakan login.")
-            return redirect(url_for("login"))
+            user = User(
+                username=username,
+                password_hash=generate_password_hash(password),
+                created_at=datetime.now(timezone.utc),
+            )
+            db.session.add(user)
+            try:
+                # Commit eksplisit memastikan akun benar-benar tersimpan.
+                db.session.commit()
+            except IntegrityError:
+                db.session.rollback()
+                if find_user_row(username) is not None:
+                    flash("Username sudah terdaftar. Silakan login.")
+                else:
+                    raise
+            else:
+                flash("Akun berhasil dibuat. Silakan login.")
+                return redirect(url_for("login"))
 
     return render_template("register.html")
 
@@ -1902,12 +2163,15 @@ def login():
         username = (request.form.get("username") or "").strip().lower()
         password = request.form.get("password") or ""
         row = find_user_row(username)
-        if row is None or not check_password_hash(row["password_hash"], password):
+        if row is None or not check_password_hash(row.password_hash, password):
             flash("Username atau password salah.")
         else:
-            # Session baru setiap login: tidak ada API key lama yang terbawa.
+            # Session login baru; API key tetap tersimpan terenkripsi per user_id.
             session.clear()
-            login_user(User(row["id"], row["username"]))
+            login_user(row)
+            if current_user_api_key_record() is not None:
+                flash("Login berhasil. Aplikasi siap menganalisis artikel.")
+                return redirect(url_for("index"))
             flash("Login berhasil. Masukkan OpenAI API key Anda untuk memulai sesi analisis.")
             return redirect(url_for("api_key_page"))
 
@@ -1916,10 +2180,9 @@ def login():
 
 @app.route("/logout", methods=["POST"])
 def logout():
-    clear_session_api_key()
     logout_user()
     session.clear()
-    flash("Anda telah logout. API key Anda telah dihapus dari sesi.")
+    flash("Anda telah logout. API key terenkripsi tetap tersimpan di akun Anda.")
     return redirect(url_for("login"))
 
 
@@ -1934,18 +2197,28 @@ def api_key_page():
             if error_message:
                 flash(error_message)
             else:
-                session[API_KEY_SESSION_FIELD] = api_key
-                flash("API key valid dan disimpan untuk sesi ini.")
+                store_current_user_api_key(api_key)
+                flash("API key valid dan disimpan terenkripsi untuk akun Anda.")
                 return redirect(url_for("index"))
-        return render_template("api_key.html", has_api_key=bool(get_session_api_key()))
+        record = current_user_api_key_record()
+        return render_template(
+            "api_key.html",
+            has_api_key=record is not None,
+            api_key_last_four=record.last_four if record else None,
+        )
 
-    return render_template("api_key.html", has_api_key=bool(get_session_api_key()))
+    record = current_user_api_key_record()
+    return render_template(
+        "api_key.html",
+        has_api_key=record is not None,
+        api_key_last_four=record.last_four if record else None,
+    )
 
 
 @app.route("/api-key/delete", methods=["POST"])
 def delete_api_key():
-    clear_session_api_key()
-    flash("API key telah dihapus dari sesi. Masukkan kembali untuk melanjutkan analisis.")
+    delete_current_user_api_key()
+    flash("API key Anda telah dihapus. Akun tetap aktif.")
     return redirect(url_for("api_key_page"))
 
 
@@ -2099,8 +2372,14 @@ def analyze_title():
     return run_stage_route("judul")
 
 
-@app.route("/analyze-abstract", methods=["POST"])
+@app.route("/analyze-abstract", methods=["GET", "POST"])
 def analyze_abstract():
+    if request.method == "GET":
+        flash(
+            "Analisis abstrak dijalankan dari halaman hasil artikel. "
+            "Silakan unggah atau buka kembali artikel Anda."
+        )
+        return redirect(url_for("index"))
     return run_stage_route("abstrak")
 
 
@@ -2232,5 +2511,9 @@ if __name__ == "__main__":
     app.run(
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "5000")),
-        debug=not IS_PRODUCTION,
+        debug=(
+            not IS_PRODUCTION
+            and os.getenv("FLASK_DEBUG", "0").strip().lower()
+            in {"1", "true", "yes"}
+        ),
     )

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sesi Form Kedaluwarsa - Reviu Artikel Ilmiah AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel upload-panel">
+        <div>
+          <p class="eyebrow">Keamanan Form</p>
+          <h1>Sesi form sudah tidak berlaku</h1>
+          <p class="lead">
+            Permintaan tidak diproses untuk melindungi akun Anda. Hal ini dapat
+            terjadi jika halaman terlalu lama terbuka atau aplikasi baru saja
+            dimulai ulang.
+          </p>
+          <p class="lead note">
+            Muat ulang halaman tujuan, lalu kirim form kembali agar token
+            keamanan diperbarui.
+          </p>
+        </div>
+        <div class="alert">
+          <p>Detail: {{ reason }}</p>
+        </div>
+        <a class="secondary-button" href="{{ recovery_url }}">Kembali dan muat ulang</a>
+      </section>
+    </main>
+  </body>
+</html>
