@@ -9,7 +9,7 @@ from citations import (
     parse_citation_segment,
     run_citation_check,
 )
-from docx_fixtures import build_docx
+from docx_fixtures import build_docx, build_sdt_citation_docx
 
 
 CITATION_ARTICLE = [
@@ -122,3 +122,37 @@ def test_statistics_summary(check_result):
     assert stats["sitasi_tanpa_referensi"] >= 1
     assert stats["referensi_duplikat"] >= 1
     assert stats["tahun_tidak_cocok"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Regresi: dokumen citation manager (Mendeley/Zotero/Word) memakai w:sdt.
+# Sebelumnya seluruh statistik sitasi bernilai nol karena sitasi inline dan
+# blok bibliografi berada di dalam content control yang tidak terbaca.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def sdt_structure(tmp_path):
+    path = build_sdt_citation_docx(path=tmp_path / "sdt.docx")
+    return extract_article_structure(path)
+
+
+def test_sdt_inline_citations_present_in_extracted_text(sdt_structure):
+    intro_text = sdt_structure["sections"]["pendahuluan"]["text"]
+    assert "(Fatmawati dkk., 2024)" in intro_text
+    assert "(Mailah & Sujarwo, 2023)" in intro_text
+
+
+def test_sdt_body_bibliography_extracted(sdt_structure):
+    section = sdt_structure["sections"]["daftar_pustaka"]
+    assert len(section["paragraphs"]) == 2
+    references = extract_references(sdt_structure)
+    assert [r["penulis_pertama"] for r in references] == ["fatmawati", "mailah"]
+
+
+def test_sdt_document_statistics_are_not_zero(sdt_structure):
+    stats = run_citation_check(sdt_structure)["pencocokan"]["statistik"]
+    assert stats["jumlah_sitasi_terdeteksi"] == 2
+    assert stats["jumlah_referensi"] == 2
+    assert stats["cocok_pasti"] == 2
+    assert stats["sitasi_tanpa_referensi"] == 0
+    assert stats["referensi_tidak_pernah_disitasi"] == 0

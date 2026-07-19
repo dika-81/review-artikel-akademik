@@ -655,3 +655,48 @@ pre {
   .article-type-form { align-items: stretch; flex-direction: column; }
   .finding-head { row-gap: 6px; }
 }
+
+/* Mode analisis: pilihan di halaman unggah */
+.mode-choice {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 12px 0;
+  display: grid;
+  gap: 10px;
+}
+.mode-choice legend { font-weight: 700; padding: 0 6px; }
+.mode-option {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+.mode-option input { margin-top: 4px; }
+.mode-option small { display: block; color: #627085; }
+.mode-label { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mode-label .note { color: #627085; font-size: 0.85rem; }
+
+/* Kartu data vertikal pengganti tabel horizontal */
+.record-list { display: grid; gap: 10px; }
+.record-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fbfcfd;
+}
+.record-card dl { margin: 0; }
+.record-card dt {
+  font-weight: 700;
+  color: #0F5147;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin-top: 8px;
+}
+.record-card dt:first-child { margin-top: 0; }
+.record-card dd { margin: 2px 0 0 0; color: #233142; overflow-wrap: anywhere; }
+
+/* Contoh revisi collapsible pada kartu temuan */
+.example-details summary { cursor: pointer; font-weight: 600; color: #146C5D; }
+.example-details p { margin: 6px 0 4px 0; white-space: pre-wrap; }

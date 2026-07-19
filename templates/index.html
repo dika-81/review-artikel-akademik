@@ -48,6 +48,25 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <label for="article">File artikel ilmiah (.docx)</label>
           <input id="article" name="article" type="file" accept=".docx" required>
+
+          <fieldset class="mode-choice">
+            <legend>Mode Analisis</legend>
+            <label class="mode-option">
+              <input type="radio" name="mode_analisis" value="ringkas" checked>
+              <span>
+                <strong>Analisis Ringkas</strong>
+                <small>Menampilkan komentar singkat hanya pada bagian yang paling perlu direvisi.</small>
+              </span>
+            </label>
+            <label class="mode-option">
+              <input type="radio" name="mode_analisis" value="mendalam">
+              <span>
+                <strong>Analisis Mendalam</strong>
+                <small>Menampilkan alasan akademik, dampak, dan contoh revisi untuk masalah penting.</small>
+              </span>
+            </label>
+          </fieldset>
+
           <button type="submit">
             <span class="button-status" aria-hidden="true">▶</span>
             Upload Artikel

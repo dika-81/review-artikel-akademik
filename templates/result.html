@@ -11,7 +11,7 @@
       <span class="badge badge-{{ kind }}">{{ text }}</span>
     {%- endmacro %}
 
-    {% macro finding_card(finding) %}
+    {% macro finding_card(finding, mode="mendalam") %}
       <article class="finding-card priority-{{ finding.get('prioritas', 'minor') }}">
         <header class="finding-head">
           <span class="finding-id">{{ finding.get("id", "") }}</span>
@@ -23,14 +23,16 @@
           {% elif finding.get("validasi_kutipan") == "terverifikasi" %}
             {{ badge("Kutipan terverifikasi", "ok") }}
           {% endif %}
-          {% if finding.get("status_contoh") == "memerlukan data penulis" %}
-            {{ badge("Memerlukan data penulis", "warn") }}
-          {% elif finding.get("status_contoh", "").startswith("dapat") %}
-            {{ badge("Dapat langsung diperbaiki", "ok") }}
-          {% else %}
-            {{ badge("Contoh berupa template", "info") }}
+          {% if mode != "ringkas" %}
+            {% if finding.get("status_contoh") == "memerlukan data penulis" %}
+              {{ badge("Memerlukan data penulis", "warn") }}
+            {% elif finding.get("status_contoh", "").startswith("dapat") %}
+              {{ badge("Dapat langsung diperbaiki", "ok") }}
+            {% elif finding.get("contoh_revisi") %}
+              {{ badge("Contoh berupa template", "info") }}
+            {% endif %}
+            {{ badge("Keyakinan: " ~ finding.get("keyakinan", "sedang"), "muted") }}
           {% endif %}
-          {{ badge("Keyakinan: " ~ finding.get("keyakinan", "sedang"), "muted") }}
         </header>
 
         {% set loc = finding.get("lokasi", {}) %}
@@ -47,53 +49,60 @@
         {% endif %}
 
         <dl class="finding-detail">
-          {% if finding.get("jenis_masalah") %}<dt>Jenis masalah</dt><dd>{{ finding.get("jenis_masalah") }}</dd>{% endif %}
-          {% if finding.get("kriteria_yang_digunakan") %}
-            <dt>Kriteria yang digunakan</dt>
-            <dd>{{ finding.get("kriteria_yang_digunakan") }}
-              {% if finding.get("alasan_kriteria_relevan") %}<br><em>{{ finding.get("alasan_kriteria_relevan") }}</em>{% endif %}
-            </dd>
-          {% endif %}
           {% if finding.get("masalah") %}<dt>Masalah</dt><dd>{{ finding.get("masalah") }}</dd>{% endif %}
-          {% if finding.get("alasan") %}<dt>Alasan akademik</dt><dd>{{ finding.get("alasan") }}</dd>{% endif %}
-          {% if finding.get("dampak") %}<dt>Dampak</dt><dd>{{ finding.get("dampak") }}</dd>{% endif %}
+          {% if mode != "ringkas" %}
+            {% if finding.get("jenis_masalah") %}<dt>Jenis masalah</dt><dd>{{ finding.get("jenis_masalah") }}</dd>{% endif %}
+            {% if finding.get("kriteria_yang_digunakan") %}
+              <dt>Kriteria yang digunakan</dt>
+              <dd>{{ finding.get("kriteria_yang_digunakan") }}
+                {% if finding.get("alasan_kriteria_relevan") %}<br><em>{{ finding.get("alasan_kriteria_relevan") }}</em>{% endif %}
+              </dd>
+            {% endif %}
+            {% if finding.get("alasan") %}<dt>Alasan akademik</dt><dd>{{ finding.get("alasan") }}</dd>{% endif %}
+            {% if finding.get("dampak") %}<dt>Dampak</dt><dd>{{ finding.get("dampak") }}</dd>{% endif %}
+          {% endif %}
           {% if finding.get("tindakan_revisi") %}<dt>Tindakan revisi</dt><dd>{{ finding.get("tindakan_revisi") }}</dd>{% endif %}
-          {% if finding.get("contoh_revisi") %}
-            <dt>Contoh revisi</dt>
-            <dd class="finding-example">{{ finding.get("contoh_revisi") }}
-              <br><small>Status contoh: {{ finding.get("status_contoh", "template") }}</small>
-            </dd>
-          {% endif %}
-          {% if finding.get("keterkaitan") %}
-            <dt>Hubungan dengan bagian lain</dt>
-            <dd>
-              <ul>
-                {% for link in finding.get("keterkaitan", []) %}
-                  <li><strong>{{ link.get("bagian", "") }}</strong>{% if link.get("penjelasan") %}: {{ link.get("penjelasan") }}{% endif %}</li>
-                {% endfor %}
-              </ul>
-            </dd>
-          {% endif %}
-          {% if finding.get("catatan_validasi") %}
-            <dt>Catatan validasi</dt><dd>{{ finding.get("catatan_validasi") }}</dd>
+          {% if mode != "ringkas" %}
+            {% if finding.get("contoh_revisi") %}
+              <dt>Contoh revisi</dt>
+              <dd class="finding-example">
+                <details class="example-details">
+                  <summary>Lihat contoh revisi</summary>
+                  <p>{{ finding.get("contoh_revisi") }}</p>
+                  <small>Status contoh: {{ finding.get("status_contoh", "template") }}</small>
+                </details>
+              </dd>
+            {% endif %}
+            {% if finding.get("keterkaitan") %}
+              <dt>Hubungan dengan bagian lain</dt>
+              <dd>
+                <ul>
+                  {% for link in finding.get("keterkaitan", []) %}
+                    <li><strong>{{ link.get("bagian", "") }}</strong>{% if link.get("penjelasan") %}: {{ link.get("penjelasan") }}{% endif %}</li>
+                  {% endfor %}
+                </ul>
+              </dd>
+            {% endif %}
+            {% if finding.get("catatan_validasi") %}
+              <dt>Catatan validasi</dt><dd>{{ finding.get("catatan_validasi") }}</dd>
+            {% endif %}
           {% endif %}
         </dl>
       </article>
     {% endmacro %}
 
+    {# Kartu vertikal per baris data; tidak memakai tabel HTML horizontal. #}
     {% macro generic_table(rows) %}
       {% if rows %}
         {% if rows[0] is mapping %}
-          <div class="table-scroll">
-            <table class="data-table">
-              <thead>
-                <tr>{% for key in rows[0].keys() %}<th>{{ key|replace("_", " ")|title }}</th>{% endfor %}</tr>
-              </thead>
-              <tbody>
-                {% for row in rows %}
-                  <tr>
-                    {% for value in row.values() %}
-                      <td>
+          <div class="record-list">
+            {% for row in rows %}
+              <article class="record-card">
+                <dl>
+                  {% for key, value in row.items() %}
+                    {% if value is not none and value != "" and value != [] and value != {} %}
+                      <dt>{{ key|replace("_", " ")|title }}</dt>
+                      <dd>
                         {% if value is mapping %}
                           {% for k, v in value.items() %}<strong>{{ k|replace("_", " ")|title }}:</strong> {{ v }}<br>{% endfor %}
                         {% elif value is iterable and value is not string %}
@@ -101,12 +110,12 @@
                         {% else %}
                           {{ value }}
                         {% endif %}
-                      </td>
-                    {% endfor %}
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
+                      </dd>
+                    {% endif %}
+                  {% endfor %}
+                </dl>
+              </article>
+            {% endfor %}
           </div>
         {% else %}
           <ul>{% for row in rows %}<li>{{ row }}</li>{% endfor %}</ul>
@@ -114,7 +123,7 @@
       {% endif %}
     {% endmacro %}
 
-    {% macro stage_section(stage_key, stage, stage_number, title, legacy_field=None) %}
+    {% macro stage_section(stage_key, stage, stage_number, title, legacy_field=None, mode="mendalam") %}
       {% if stage %}
         <section class="methodology-block">
           <div class="methodology-heading"><p class="eyebrow">Tahap {{ stage_number }}</p><h1>{{ title }}</h1></div>
@@ -144,7 +153,7 @@
               <h2>Daftar Masalah ({{ stage.get("masalah_teridentifikasi")|length }})</h2>
               <div class="finding-grid">
                 {% for finding in stage.get("masalah_teridentifikasi", []) %}
-                  {{ finding_card(finding) }}
+                  {{ finding_card(finding, mode) }}
                 {% endfor %}
               </div>
             </section>
@@ -274,7 +283,15 @@
         <div>
           <p class="eyebrow">Hasil Analisis Artikel</p>
           <h1>{{ filename }}</h1>
-          <p class="lead">Setiap tahap menghasilkan evaluasi rinci berbasis bukti teks beserta versi revisi.</p>
+          <p class="mode-label">
+            {{ badge("Mode: " ~ analysis_mode_label, "info") }}
+            {% if analysis_mode == "ringkas" %}
+              <span class="note">Komentar singkat hanya pada bagian yang paling perlu direvisi.</span>
+            {% else %}
+              <span class="note">Alasan akademik, dampak, dan contoh revisi untuk masalah penting.</span>
+            {% endif %}
+          </p>
+          <p class="lead">Setiap tahap menghasilkan evaluasi berbasis bukti teks sesuai mode analisis.</p>
 
           <div class="article-type-panel panel">
             <p>
@@ -419,7 +436,7 @@
               <section class="panel result-section">
                 <h2>Masalah Judul</h2>
                 <div class="finding-grid">
-                  {% for finding in judul.get("masalah_teridentifikasi", []) %}{{ finding_card(finding) }}{% endfor %}
+                  {% for finding in judul.get("masalah_teridentifikasi", []) %}{{ finding_card(finding, analysis_mode) }}{% endfor %}
                 </div>
               </section>
             {% endif %}
@@ -435,12 +452,12 @@
         </section>
       {% endif %}
 
-      {{ stage_section("abstrak", result.get("abstrak"), 3, "Abstrak", "abstrak_revisi") }}
-      {{ stage_section("pendahuluan", result.get("pendahuluan"), 4, "Pendahuluan", "pendahuluan_revisi") }}
-      {{ stage_section("metodologi", result.get("metodologi"), 5, "Metodologi", "metodologi_revisi") }}
-      {{ stage_section("hasil_pembahasan", result.get("hasil_pembahasan"), 6, "Hasil dan Pembahasan", "hasil_pembahasan_revisi") }}
-      {{ stage_section("kesimpulan", result.get("kesimpulan"), 7, "Kesimpulan", "kesimpulan_revisi") }}
-      {{ stage_section("konsistensi", result.get("konsistensi"), 8, "Konsistensi Lintas Bagian") }}
+      {{ stage_section("abstrak", result.get("abstrak"), 3, "Abstrak", "abstrak_revisi", analysis_mode) }}
+      {{ stage_section("pendahuluan", result.get("pendahuluan"), 4, "Pendahuluan", "pendahuluan_revisi", analysis_mode) }}
+      {{ stage_section("metodologi", result.get("metodologi"), 5, "Metodologi", "metodologi_revisi", analysis_mode) }}
+      {{ stage_section("hasil_pembahasan", result.get("hasil_pembahasan"), 6, "Hasil dan Pembahasan", "hasil_pembahasan_revisi", analysis_mode) }}
+      {{ stage_section("kesimpulan", result.get("kesimpulan"), 7, "Kesimpulan", "kesimpulan_revisi", analysis_mode) }}
+      {{ stage_section("konsistensi", result.get("konsistensi"), 8, "Konsistensi Lintas Bagian", None, analysis_mode) }}
 
       {% if result.get("sitasi_apa") %}
         {% set citation = result["sitasi_apa"] %}

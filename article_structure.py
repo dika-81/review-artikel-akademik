@@ -161,13 +161,55 @@ def split_sentences(text):
     return sentences
 
 
-def _iter_block_items(document):
-    body = document.element.body
-    for child in body.iterchildren():
+def _iter_block_elements(parent, document):
+    for child in parent.iterchildren():
         if child.tag == qn("w:p"):
             yield DocxParagraph(child, document)
         elif child.tag == qn("w:tbl"):
             yield Table(child, document)
+        elif child.tag == qn("w:sdt"):
+            # Content control (mis. bibliografi Mendeley/Zotero/Word): isi
+            # blok berada di dalam w:sdtContent dan harus tetap terbaca.
+            content = child.find(qn("w:sdtContent"))
+            if content is not None:
+                yield from _iter_block_elements(content, document)
+
+
+def _iter_block_items(document):
+    yield from _iter_block_elements(document.element.body, document)
+
+
+_MC_FALLBACK_TAG = (
+    "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+)
+_SKIPPED_TEXT_CONTAINERS = {qn("w:sdtPr"), qn("w:sdtEndPr"), _MC_FALLBACK_TAG}
+
+
+def _collect_run_text(node, parts):
+    tag = node.tag
+    if tag in _SKIPPED_TEXT_CONTAINERS:
+        return
+    if tag == qn("w:t"):
+        parts.append(node.text or "")
+        return
+    if tag in (qn("w:tab"), qn("w:br"), qn("w:cr")):
+        parts.append(" ")
+        return
+    for child in node:
+        _collect_run_text(child, parts)
+
+
+def paragraph_full_text(paragraph):
+    """Teks lengkap paragraf termasuk isi content control (w:sdt) dan hyperlink.
+
+    `DocxParagraph.text` hanya membaca run langsung sehingga sitasi yang dibuat
+    citation manager (tersimpan dalam w:sdt inline) ikut hilang. Fungsi ini
+    membaca seluruh w:t dalam urutan dokumen, kecuali properti sdt dan
+    fallback markup-compatibility (agar teks tidak terduplikasi).
+    """
+    parts = []
+    _collect_run_text(paragraph._p, parts)
+    return re.sub(r"\s+", " ", "".join(parts)).strip()
 
 
 def _new_section(key):
@@ -238,7 +280,7 @@ def extract_article_structure(path):
             current["tables"].append(table)
             continue
 
-        text = block.text.strip()
+        text = paragraph_full_text(block)
         if not text:
             continue
 

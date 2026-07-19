@@ -646,10 +646,6 @@ def build_adaptive_rules_text(type_key):
         "Jika relevansi suatu kriteria meragukan, tulis: \"Kriteria ini tidak "
         "diterapkan karena tidak cukup relevan dengan desain artikel yang terdeteksi.\""
     )
-    lines.append(
-        "Setiap temuan wajib mencantumkan kriteria_yang_digunakan dan "
-        "alasan_kriteria_relevan berdasarkan bukti bentuk data/desain artikel."
-    )
     if type_key == "belum_teridentifikasi":
         lines.append(
             "Jenis artikel belum pasti. Gunakan hanya kriteria universal dan tuliskan "

@@ -10,7 +10,30 @@ import re
 
 PRIORITY_ORDER = {"kritis": 0, "mayor": 1, "minor": 2}
 VALID_PRIORITIES = set(PRIORITY_ORDER)
+PRIORITY_ALIASES = {"critical": "kritis", "kritikal": "kritis", "major": "mayor"}
 VALID_CONFIDENCE = {"tinggi", "sedang", "rendah"}
+CONFIDENCE_ORDER = {"tinggi": 0, "sedang": 1, "rendah": 2}
+
+# Mode analisis: "ringkas" (default unggahan baru) atau "mendalam".
+# Hasil lama tanpa field mode diperlakukan sebagai mode mendalam lama.
+MODE_RINGKAS = "ringkas"
+MODE_MENDALAM = "mendalam"
+ANALYSIS_MODES = (MODE_RINGKAS, MODE_MENDALAM)
+DEFAULT_ANALYSIS_MODE = MODE_RINGKAS
+LEGACY_ANALYSIS_MODE = MODE_MENDALAM
+MODE_MAX_FINDINGS = {MODE_RINGKAS: 5, MODE_MENDALAM: 8}
+NO_MAJOR_ISSUES_SUMMARY = (
+    "Tidak ditemukan masalah mayor yang memerlukan revisi pada tahap ini."
+)
+
+# Pola temuan minor kosmetik yang tidak berdampak pada mutu akademik.
+COSMETIC_MINOR_PATTERN = re.compile(
+    r"tata\s*bahasa|ejaan|typo|salah\s*ketik|saltik|tanda\s*baca|kapitalisasi|"
+    r"huruf\s*kapital|diksi|pilihan\s*kata|gaya\s*(?:bahasa|penulisan|selingkung)|"
+    r"variasi\s*(?:gaya|kalimat)|cetak\s*miring|italik|spasi|tata\s*letak|"
+    r"format\s*(?:penulisan|kecil)|pengulangan\s*kata|repetisi\s*kata|kosmetik",
+    re.IGNORECASE,
+)
 VALID_EXAMPLE_STATUS = {
     "dapat digunakan",
     "dapat langsung digunakan",
@@ -131,6 +154,9 @@ def normalize_finding(raw, section_code, index):
     for key in FINDING_TEMPLATE:
         if key in raw and raw[key] is not None:
             finding[key] = raw[key]
+    # Alias skema mode: "status_data" setara dengan "status_contoh".
+    if not raw.get("status_contoh") and raw.get("status_data"):
+        finding["status_contoh"] = raw["status_data"]
     # Simpan field tambahan yang berguna dari model.
     for key in ("validasi_kutipan", "kutipan_valid", "catatan_validasi", "memerlukan_data_penulis"):
         if key in raw:
@@ -140,6 +166,7 @@ def normalize_finding(raw, section_code, index):
         finding["id"] = f"{section_code}-{index + 1:02d}"
 
     priority = str(finding["prioritas"]).strip().lower()
+    priority = PRIORITY_ALIASES.get(priority, priority)
     finding["prioritas"] = priority if priority in VALID_PRIORITIES else "minor"
 
     confidence = str(finding["keyakinan"]).strip().lower()
@@ -211,6 +238,9 @@ def normalize_section_result(data, section_code, section_label):
         data = {}
     result = dict(data)
 
+    # Mode ringkas boleh mengembalikan daftar temuan pada kunci "temuan".
+    if not result.get("masalah_teridentifikasi") and result.get("temuan"):
+        result["masalah_teridentifikasi"] = result.pop("temuan")
     findings_raw = _as_list(result.get("masalah_teridentifikasi"))
     findings = [
         normalize_finding(raw, section_code, index)
@@ -277,6 +307,99 @@ def normalize_section_result(data, section_code, section_label):
         if item
     ]
     result["_bagian"] = section_label
+    return result
+
+
+def resolve_analysis_mode(value):
+    """Kembalikan mode valid; nilai kosong/tidak dikenal dianggap mode mendalam lama."""
+    mode = str(value or "").strip().lower()
+    return mode if mode in ANALYSIS_MODES else LEGACY_ANALYSIS_MODE
+
+
+def is_cosmetic_minor(finding):
+    """Temuan minor kosmetik (tata bahasa ringan, gaya, format kecil) yang dibuang."""
+    if finding.get("prioritas") != "minor":
+        return False
+    text = " ".join(
+        str(finding.get(key) or "") for key in ("jenis_masalah", "masalah")
+    )
+    return bool(COSMETIC_MINOR_PATTERN.search(text))
+
+
+def sort_findings_for_mode(findings):
+    """Urutkan: kritis -> mayor -> minor, kutipan valid dulu, keyakinan, lalu dampak."""
+    return sorted(
+        findings,
+        key=lambda f: (
+            PRIORITY_ORDER.get(f.get("prioritas"), 3),
+            0 if f.get("kutipan_valid", True) else 1,
+            CONFIDENCE_ORDER.get(f.get("keyakinan"), 1),
+            0 if str(f.get("dampak") or "").strip() else 1,
+        ),
+    )
+
+
+def apply_mode_limits(result, mode):
+    """Potong temuan sesuai mode setelah parsing dan validasi.
+
+    - ringkas: hanya kritis/mayor, maksimal 5 temuan.
+    - mendalam: kritis/mayor + minor non-kosmetik, maksimal 8 temuan.
+    Temuan minor kosmetik selalu dibuang tanpa dilaporkan.
+    """
+    mode = resolve_analysis_mode(mode)
+    findings = _as_list(result.get("masalah_teridentifikasi"))
+    if mode == MODE_RINGKAS:
+        findings = [
+            finding
+            for finding in findings
+            if finding.get("prioritas") in ("kritis", "mayor")
+        ]
+    else:
+        findings = [
+            finding for finding in findings if not is_cosmetic_minor(finding)
+        ]
+    findings = sort_findings_for_mode(findings)
+    limit = MODE_MAX_FINDINGS[mode]
+    overflow = findings[limit:]
+    findings = findings[:limit]
+
+    result["masalah_teridentifikasi"] = findings
+    result["jumlah_masalah"] = count_by_priority(findings)
+    result["mode_analisis"] = mode
+    result.pop("masalah_tambahan_ringkas", None)
+
+    important_overflow = [
+        finding
+        for finding in overflow
+        if finding.get("prioritas") in ("kritis", "mayor")
+    ]
+    if important_overflow:
+        notes = [
+            str(item)
+            for item in _as_list(result.get("catatan_data_yang_harus_dilengkapi"))
+            if item
+        ]
+        notes.append(
+            f"{len(important_overflow)} temuan kritis/mayor lain tidak ditampilkan "
+            f"karena batas mode {mode} ({limit} temuan per tahap)."
+        )
+        result["catatan_data_yang_harus_dilengkapi"] = notes
+
+    if not findings and not str(result.get("ringkasan") or "").strip():
+        result["ringkasan"] = NO_MAJOR_ISSUES_SUMMARY
+
+    priorities = [
+        item
+        for item in _as_list(result.get("prioritas_revisi"))
+        if item
+    ]
+    if not priorities:
+        priorities = [
+            f"{f['id']}: {f.get('tindakan_revisi') or f.get('masalah')}"
+            for f in findings
+            if f.get("prioritas") in ("kritis", "mayor")
+        ]
+    result["prioritas_revisi"] = [str(item) for item in priorities][:3]
     return result
 
 

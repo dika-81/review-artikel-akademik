@@ -45,11 +45,14 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 from analysis_schema import (
+    ANALYSIS_MODES,
+    DEFAULT_ANALYSIS_MODE,
     ModelJSONError,
-    count_by_priority,
+    apply_mode_limits,
     normalize_finding,
     normalize_section_result,
     parse_model_json,
+    resolve_analysis_mode,
     sort_findings,
 )
 from article_profile import (
@@ -377,6 +380,20 @@ SECTION_STAGE_META = {
 
 SECTION_CHUNK_CHARS = int(os.getenv("SECTION_CHUNK_CHARS", "20000"))
 
+ANALYSIS_MODE_LABELS = {
+    "ringkas": "Analisis Ringkas",
+    "mendalam": "Analisis Mendalam",
+}
+ANALYSIS_MODE_DESCRIPTIONS = {
+    "ringkas": "Menampilkan komentar singkat hanya pada bagian yang paling perlu direvisi.",
+    "mendalam": "Menampilkan alasan akademik, dampak, dan contoh revisi untuk masalah penting.",
+}
+
+
+def analysis_mode(result):
+    """Mode analisis hasil ini; hasil lama tanpa field mode = mode mendalam lama."""
+    return resolve_analysis_mode((result or {}).get("_mode_analisis"))
+
 
 def allowed_file(filename):
     return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
@@ -537,8 +554,8 @@ def profile_summary_for_prompts(result):
     )
 
 
-def finalize_section_result(data, structure, stage_key, type_key):
-    """Normalisasi + validasi bukti + filter kriteria tidak relevan untuk satu bagian."""
+def finalize_section_result(data, structure, stage_key, type_key, mode="mendalam"):
+    """Normalisasi + validasi bukti + filter kriteria tidak relevan + batas mode."""
     code, label = SECTION_STAGE_META.get(stage_key, ("SEC", stage_key.title()))
     data = normalize_section_result(data, code, label)
     findings, stats = validate_findings_quotes(
@@ -548,7 +565,7 @@ def finalize_section_result(data, structure, stage_key, type_key):
     data["masalah_teridentifikasi"] = sort_findings(kept)
     if excluded:
         data["masalah_dikecualikan"] = excluded + list(data.get("masalah_dikecualikan") or [])
-    data["jumlah_masalah"] = count_by_priority(data["masalah_teridentifikasi"])
+    data = apply_mode_limits(data, mode)
     data["validasi_bukti"] = stats
     return data
 
@@ -679,6 +696,7 @@ def stage_profile(structure, result):
 
 def stage_title(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
+    mode = analysis_mode(result)
     title_info = detect_title(structure)
     data = openai_chat_json(
         SYSTEM_ANALYST,
@@ -686,6 +704,7 @@ def stage_title(structure, result):
             title_info["title"],
             profile_summary,
             build_short_article_context(structure),
+            mode=mode,
         ),
     )
     findings = [
@@ -694,7 +713,7 @@ def stage_title(structure, result):
     ]
     findings, stats = validate_findings_quotes(findings, structure)
     data["masalah_teridentifikasi"] = sort_findings(findings)
-    data["jumlah_masalah"] = count_by_priority(findings)
+    data = apply_mode_limits(data, mode)
     data["validasi_bukti"] = stats
     data["judul_awal"] = data.get("judul_awal") or title_info["title"]
     return data
@@ -718,6 +737,7 @@ def _abstract_context(structure):
 
 def stage_abstract(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
+    mode = analysis_mode(result)
     abstract_section = get_section(structure, "abstrak")
     data = openai_chat_json(
         SYSTEM_ANALYST,
@@ -726,13 +746,15 @@ def stage_abstract(structure, result):
             type_key,
             abstract_section,
             _abstract_context(structure),
+            mode=mode,
         ),
     )
-    return finalize_section_result(data, structure, "abstrak", type_key)
+    return finalize_section_result(data, structure, "abstrak", type_key, mode)
 
 
 def stage_introduction(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
+    mode = analysis_mode(result)
     intro_section = get_section(structure, "pendahuluan")
     abstract_context = format_section_for_prompt(
         get_section(structure, "abstrak"), max_chars=3000
@@ -753,15 +775,17 @@ def stage_introduction(structure, result):
             format_section_for_prompt(batch),
             context,
             batch_note=note,
+            mode=mode,
         ),
         list_keys=("peta_fungsi_paragraf",),
         text_keys=("evaluasi_gap_penelitian", "evaluasi_tujuan_dan_rumusan_masalah"),
     )
-    return finalize_section_result(data, structure, "pendahuluan", type_key)
+    return finalize_section_result(data, structure, "pendahuluan", type_key, mode)
 
 
 def stage_methodology(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
+    mode = analysis_mode(result)
     method_section = get_section(structure, "metodologi")
     abstract_context = format_section_for_prompt(
         get_section(structure, "abstrak"), max_chars=3000
@@ -782,15 +806,17 @@ def stage_methodology(structure, result):
             type_key,
             format_section_for_prompt(batch) + note,
             context,
+            mode=mode,
         ),
         list_keys=("pemeriksaan_komponen",),
         text_keys=("kesesuaian_metode_dengan_tujuan",),
     )
-    return finalize_section_result(data, structure, "metodologi", type_key)
+    return finalize_section_result(data, structure, "metodologi", type_key, mode)
 
 
 def stage_results_discussion(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
+    mode = analysis_mode(result)
     section = get_section(structure, "hasil_pembahasan")
     tables_text = "\n\n".join(
         f"[{table['id']}] Tabel {table['table_number']} (bagian {table['section_label']}):\n"
@@ -813,6 +839,7 @@ def stage_results_discussion(structure, result):
             tables_text,
             context,
             batch_note=note,
+            mode=mode,
         ),
         list_keys=(
             "interpretasi_tabel",
@@ -821,11 +848,12 @@ def stage_results_discussion(structure, result):
         ),
         text_keys=("versi_revisi_hasil", "versi_revisi_pembahasan"),
     )
-    return finalize_section_result(data, structure, "hasil_pembahasan", type_key)
+    return finalize_section_result(data, structure, "hasil_pembahasan", type_key, mode)
 
 
 def stage_conclusion(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
+    mode = analysis_mode(result)
     conclusion_section = get_section(structure, "kesimpulan")
     results_text = format_section_for_prompt(
         get_section(structure, "hasil_pembahasan"), max_chars=9000
@@ -841,13 +869,16 @@ def stage_conclusion(structure, result):
             type_key,
             format_section_for_prompt(conclusion_section),
             context,
+            mode=mode,
         ),
     )
-    return finalize_section_result(data, structure, "kesimpulan", type_key)
+    return finalize_section_result(data, structure, "kesimpulan", type_key, mode)
 
 
 def stage_cross_section(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
+    mode = analysis_mode(result)
+    section_limit = 3500 if mode == "ringkas" else 7000
     section_texts = []
     section_texts.append(
         (
@@ -862,17 +893,17 @@ def stage_cross_section(structure, result):
         section_texts.append(
             (
                 (section or {}).get("label", key.title()),
-                format_section_for_prompt(section, max_chars=7000),
+                format_section_for_prompt(section, max_chars=section_limit),
             )
         )
     citation_summary = run_citation_check(structure)["pencocokan"]["statistik"]
     data = openai_chat_json(
         SYSTEM_ANALYST,
         prompt_builders.build_cross_section_prompt(
-            profile_summary, type_key, section_texts, citation_summary
+            profile_summary, type_key, section_texts, citation_summary, mode=mode
         ),
     )
-    data = finalize_section_result(data, structure, "konsistensi", type_key)
+    data = finalize_section_result(data, structure, "konsistensi", type_key, mode)
     data["statistik_sitasi"] = citation_summary
     return data
 
@@ -885,7 +916,7 @@ def stage_citations(structure, result):
         ai_explanation = openai_chat_json(
             SYSTEM_ANALYST,
             prompt_builders.build_citation_explanation_prompt(
-                deterministic, reference_text
+                deterministic, reference_text, mode=analysis_mode(result)
             ),
         )
     except RuntimeError as exc:
@@ -939,22 +970,35 @@ def stage_revision_text(result, key):
     )
 
 
-def extract_reference_search_terms(result):
+def stage_context_text(result, structure, key, limit):
+    """Teks bagian untuk konteks pencarian referensi.
+
+    Mode ringkas tidak menghasilkan versi revisi, sehingga teks asli artikel
+    dipakai sebagai fallback.
+    """
+    text = stage_revision_text(result, key)
+    if not text.strip() and structure is not None:
+        section = get_section(structure, key)
+        text = (section or {}).get("text", "")
+    return text[:limit]
+
+
+def extract_reference_search_terms(result, structure=None):
     prompt = f"""
-Ekstrak kata kunci pencarian artikel ilmiah dari hasil revisi berikut.
+Ekstrak kata kunci pencarian artikel ilmiah dari teks berikut.
 Berikan 5-8 kata kunci dan 3 query pencarian singkat. Jangan menambahkan topik yang tidak ada.
 
 Judul:
 {result.get("judul", {}).get("judul_rekomendasi", "")}
 
 Abstrak:
-{stage_revision_text(result, "abstrak")}
+{stage_context_text(result, structure, "abstrak", 4000)}
 
 Pendahuluan:
-{stage_revision_text(result, "pendahuluan")[:4000]}
+{stage_context_text(result, structure, "pendahuluan", 4000)}
 
 Metodologi:
-{stage_revision_text(result, "metodologi")[:4000]}
+{stage_context_text(result, structure, "metodologi", 4000)}
 
 Format JSON:
 {{"kata_kunci": ["..."], "query_pencarian": ["...", "...", "..."]}}
@@ -1127,7 +1171,7 @@ def search_openalex(query, limit=15):
     ]
 
 
-def rank_reference_candidates(candidates, result, search_terms):
+def rank_reference_candidates(candidates, result, search_terms, structure=None):
     immutable_candidates = [
         {
             "id": index,
@@ -1143,9 +1187,9 @@ Jangan mengubah metadata dan jangan menambahkan referensi. Gunakan hanya ID yang
 
 Konteks artikel:
 Judul: {result.get("judul", {}).get("judul_rekomendasi", "")}
-Abstrak: {stage_revision_text(result, "abstrak")}
-Pendahuluan: {stage_revision_text(result, "pendahuluan")[:3000]}
-Metodologi: {stage_revision_text(result, "metodologi")[:3000]}
+Abstrak: {stage_context_text(result, structure, "abstrak", 3000)}
+Pendahuluan: {stage_context_text(result, structure, "pendahuluan", 3000)}
+Metodologi: {stage_context_text(result, structure, "metodologi", 3000)}
 Kata kunci: {", ".join(search_terms.get("kata_kunci", []))}
 
 Kandidat:
@@ -1200,8 +1244,8 @@ Format JSON:
     return ordered
 
 
-def find_verified_reference_recommendations(result):
-    search_terms = extract_reference_search_terms(result)
+def find_verified_reference_recommendations(result, structure=None):
+    search_terms = extract_reference_search_terms(result, structure)
     candidates_by_doi = {}
     errors = []
 
@@ -1236,7 +1280,7 @@ def find_verified_reference_recommendations(result):
         key=lambda item: item.get("jumlah_sitasi", 0),
         reverse=True,
     )[:30]
-    ranked = rank_reference_candidates(candidates, result, search_terms)[:15]
+    ranked = rank_reference_candidates(candidates, result, search_terms, structure)[:15]
     if len(ranked) < 10:
         raise RuntimeError(
             "Sumber ilmiah hanya menghasilkan "
@@ -1312,6 +1356,7 @@ def citation_groups_for_display(stage_data):
 
 
 def result_template_context(filename, output_name, result):
+    mode = analysis_mode(result)
     return {
         "filename": filename,
         "output_name": output_name,
@@ -1319,6 +1364,8 @@ def result_template_context(filename, output_name, result):
         "workflow_steps": get_workflow_steps(result),
         "article_type": article_type_context(result),
         "citation_groups": citation_groups_for_display(result.get("sitasi_apa")),
+        "analysis_mode": mode,
+        "analysis_mode_label": ANALYSIS_MODE_LABELS[mode],
         "result": result,
     }
 
@@ -1474,13 +1521,23 @@ FINDING_PDF_FIELDS = [
     ("validasi_kutipan", "Validasi kutipan"),
 ]
 
+# Mode ringkas hanya memuat inti temuan agar PDF lebih pendek.
+FINDING_PDF_FIELDS_RINGKAS = [
+    ("lokasi", "Lokasi"),
+    ("kutipan_asli", "Kutipan asli"),
+    ("masalah", "Masalah"),
+    ("tindakan_revisi", "Tindakan revisi"),
+    ("validasi_kutipan", "Validasi kutipan"),
+]
 
-def add_finding_to_pdf(story, finding, styles):
+
+def add_finding_to_pdf(story, finding, styles, mode="mendalam"):
     header = (
         f"{finding.get('id', '')} — Prioritas: {str(finding.get('prioritas', '')).upper()}"
     )
+    fields = FINDING_PDF_FIELDS_RINGKAS if mode == "ringkas" else FINDING_PDF_FIELDS
     story.append(Paragraph(pdf_safe_text(header), styles["FieldTitle"]))
-    for key, label in FINDING_PDF_FIELDS:
+    for key, label in fields:
         value = finding.get(key)
         if value in (None, "", [], {}):
             continue
@@ -1549,7 +1606,7 @@ PDF_ANALYSIS_STAGES = [
 ]
 
 
-def add_stage_to_pdf(story, stage_key, stage_data, styles):
+def add_stage_to_pdf(story, stage_key, stage_data, styles, mode="mendalam"):
     if not isinstance(stage_data, dict) or not stage_data:
         story.append(Paragraph("Belum ada hasil.", styles["BodyText"]))
         return
@@ -1570,7 +1627,7 @@ def add_stage_to_pdf(story, stage_key, stage_data, styles):
                 story.append(Paragraph(pdf_safe_text(label), styles["FieldTitle"]))
                 add_pdf_value(story, stage_data[key], styles)
         for finding in stage_data.get("masalah_teridentifikasi", []):
-            add_finding_to_pdf(story, finding, styles)
+            add_finding_to_pdf(story, finding, styles, mode)
         return
 
     if stage_key == "sitasi_apa":
@@ -1635,9 +1692,10 @@ def add_stage_to_pdf(story, stage_key, stage_data, styles):
     if findings:
         story.append(Paragraph("Daftar Masalah", styles["FieldTitle"]))
         for finding in findings:
-            add_finding_to_pdf(story, finding, styles)
+            add_finding_to_pdf(story, finding, styles, mode)
 
-    for key, label in SECTION_STAGE_EXTRA_PDF_FIELDS.get(stage_key, []):
+    extra_fields = [] if mode == "ringkas" else SECTION_STAGE_EXTRA_PDF_FIELDS.get(stage_key, [])
+    for key, label in extra_fields:
         if stage_data.get(key) not in (None, "", [], {}):
             story.append(Paragraph(pdf_safe_text(label), styles["FieldTitle"]))
             add_pdf_value(story, stage_data[key], styles)
@@ -1655,12 +1713,12 @@ def add_stage_to_pdf(story, stage_key, stage_data, styles):
         )
         add_pdf_value(story, stage_data["catatan_data_yang_harus_dilengkapi"], styles)
 
-    if stage_data.get("masalah_dikecualikan"):
+    if mode != "ringkas" and stage_data.get("masalah_dikecualikan"):
         story.append(
             Paragraph("Kriteria yang Tidak Diterapkan (Tidak Relevan)", styles["FieldTitle"])
         )
         for finding in stage_data["masalah_dikecualikan"]:
-            add_finding_to_pdf(story, finding, styles)
+            add_finding_to_pdf(story, finding, styles, mode)
 
 
 def draw_pdf_page(canvas, document):
@@ -1759,6 +1817,7 @@ def build_review_pdf(result, pdf_path):
     filename = result.get("_filename", "Artikel ilmiah")
     created_at = result.get("_created_at", "")
     type_context = article_type_context(result)
+    mode = analysis_mode(result)
     story = [
         Spacer(1, 12 * mm),
         Paragraph("Laporan Hasil Reviu Artikel Ilmiah", styles["ReportTitle"]),
@@ -1773,6 +1832,10 @@ def build_review_pdf(result, pdf_path):
             ),
             styles["ReportMeta"],
         ),
+        Paragraph(
+            pdf_safe_text(f"Mode analisis: {ANALYSIS_MODE_LABELS[mode]}"),
+            styles["ReportMeta"],
+        ),
         Spacer(1, 12 * mm),
     ]
 
@@ -1782,7 +1845,7 @@ def build_review_pdf(result, pdf_path):
         story.append(
             Paragraph(f"{section_index + 1}. {pdf_safe_text(title)}", styles["ModuleTitle"])
         )
-        add_stage_to_pdf(story, stage_key, result.get(stage_key, {}), styles)
+        add_stage_to_pdf(story, stage_key, result.get(stage_key, {}), styles, mode)
 
     document.build(story, onFirstPage=draw_pdf_page, onLaterPages=draw_pdf_page)
 
@@ -1968,15 +2031,20 @@ def analyze():
             return redirect(url_for("index"))
 
         heuristic_profile = detect_article_profile(structure)
+        chosen_mode = (request.form.get("mode_analisis") or DEFAULT_ANALYSIS_MODE).strip().lower()
+        if chosen_mode not in ANALYSIS_MODES:
+            chosen_mode = DEFAULT_ANALYSIS_MODE
         result = {
             "_uploaded": True,
             "_filename": filename,
             "_created_at": datetime.now().isoformat(),
             "_profil_heuristik": heuristic_profile,
             "_jenis_artikel_pilihan": "otomatis",
+            "_mode_analisis": chosen_mode,
         }
         output_name = save_result(filename, result)
         flash(
+            f"Mode analisis: {ANALYSIS_MODE_LABELS[chosen_mode]}. "
             "Jenis artikel terdeteksi (heuristik): "
             f"{article_type_label(heuristic_profile.get('jenis_artikel'))} "
             f"(keyakinan {heuristic_profile.get('tingkat_keyakinan', 'rendah')}). "
@@ -2116,7 +2184,7 @@ def analyze_reference_recommendations():
     try:
         structure = extract_article_structure(saved_path)
         reference_section = get_section(structure, "daftar_pustaka")
-        recommendation_result = find_verified_reference_recommendations(result)
+        recommendation_result = find_verified_reference_recommendations(result, structure)
         recommendation_result["referensi_asli"] = (reference_section or {}).get("text", "")
         result["referensi_tambahan"] = recommendation_result
         update_result(output_name, result)

@@ -3,6 +3,79 @@
 import io
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+
+
+def _sdt_run(text):
+    run = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.set(qn("xml:space"), "preserve")
+    t.text = text
+    run.append(t)
+    return run
+
+
+def add_inline_sdt(paragraph, text):
+    """Sisipkan content control inline (w:sdt) berisi teks, meniru sitasi
+    yang dibuat citation manager (Mendeley/Zotero/Word)."""
+    sdt = OxmlElement("w:sdt")
+    content = OxmlElement("w:sdtContent")
+    content.append(_sdt_run(text))
+    sdt.append(content)
+    paragraph._p.append(sdt)
+
+
+def add_body_sdt_paragraphs(document, texts):
+    """Tambahkan satu content control level body (w:sdt) berisi beberapa
+    paragraf, meniru blok bibliografi otomatis Mendeley/Zotero/Word."""
+    sdt = OxmlElement("w:sdt")
+    content = OxmlElement("w:sdtContent")
+    for text in texts:
+        paragraph = OxmlElement("w:p")
+        paragraph.append(_sdt_run(text))
+        content.append(paragraph)
+    sdt.append(content)
+    document.element.body.append(sdt)
+
+
+SDT_BIBLIOGRAPHY_ENTRIES = [
+    "Fatmawati, R., Sari, D., & Putra, A. (2024). Pemahaman konsep perkalian "
+    "di sekolah dasar. Jurnal Pendidikan Dasar, 10(2), 100-115.",
+    "Mailah, S., & Sujarwo, T. (2023). Media pembelajaran matematika untuk "
+    "kelas rendah. Jurnal Elemen, 9(1), 1-12.",
+]
+
+
+def build_sdt_citation_docx(path=None):
+    """Artikel sintetis dengan sitasi dalam w:sdt inline dan daftar pustaka
+    dalam satu w:sdt level body (regresi kasus Mendeley: statistik sitasi 0)."""
+    document = Document()
+    document.add_paragraph("Judul Artikel dengan Sitasi Content Control")
+    document.add_paragraph("Abstrak")
+    document.add_paragraph("Penelitian ini menguji pemahaman konsep perkalian.")
+    document.add_paragraph("Pendahuluan")
+    first = document.add_paragraph(
+        "Pembelajaran matematika penting dalam kehidupan sehari-hari "
+    )
+    add_inline_sdt(first, "(Fatmawati dkk., 2024)")
+    first.add_run(".")
+    second = document.add_paragraph(
+        "Media pembelajaran membantu pemahaman konsep "
+    )
+    add_inline_sdt(second, "(Mailah & Sujarwo, 2023)")
+    second.add_run(".")
+    document.add_paragraph("Kesimpulan")
+    document.add_paragraph("Pemahaman konsep meningkat melalui media.")
+    document.add_paragraph("Daftar Pustaka")
+    add_body_sdt_paragraphs(document, SDT_BIBLIOGRAPHY_ENTRIES)
+    if path is not None:
+        document.save(str(path))
+        return path
+    buffer = io.BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    return buffer
 
 
 def build_docx(paragraphs, tables=None, path=None):

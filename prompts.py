@@ -24,8 +24,29 @@ SYSTEM_ANALYST = (
     "Kembalikan jawaban HANYA dalam JSON valid tanpa teks lain."
 )
 
-FINDING_SCHEMA_TEXT = """
-Setiap masalah dalam "masalah_teridentifikasi" WAJIB memakai skema universal berikut:
+MODE_RINGKAS = "ringkas"
+MODE_MENDALAM = "mendalam"
+
+FINDING_SCHEMA_RINGKAS = """
+Setiap masalah dalam "masalah_teridentifikasi" WAJIB memakai skema minimal berikut
+(jangan menambah field lain):
+{
+  "id": "KODE-NN (mis. ABS-01; kode bagian sesuai penanda kalimat)",
+  "prioritas": "kritis/mayor",
+  "lokasi": {
+    "bagian": "nama bagian",
+    "paragraf": nomor paragraf (angka, sesuai penomoran yang diberikan),
+    "kalimat": nomor kalimat bila dapat ditentukan (angka atau null),
+    "penanda": "ID kalimat seperti INTRO-P03-S02"
+  },
+  "kutipan_asli": "maksimal 1 kalimat pendek, salin persis dari artikel",
+  "masalah": "maksimal 2 kalimat",
+  "tindakan_revisi": "maksimal 2 kalimat"
+}
+""".strip()
+
+FINDING_SCHEMA_MENDALAM = """
+Setiap masalah dalam "masalah_teridentifikasi" WAJIB memakai skema berikut:
 {
   "id": "KODE-NN (mis. ABS-01; kode bagian sesuai penanda kalimat)",
   "prioritas": "kritis/mayor/minor",
@@ -35,20 +56,28 @@ Setiap masalah dalam "masalah_teridentifikasi" WAJIB memakai skema universal ber
     "kalimat": nomor kalimat bila dapat ditentukan (angka atau null),
     "penanda": "ID kalimat seperti INTRO-P03-S02, atau deskripsi penanda teks"
   },
-  "kutipan_asli": "potongan teks yang BENAR-BENAR ada dalam artikel (salin persis)",
+  "kutipan_asli": "maksimal 2 kalimat yang BENAR-BENAR ada dalam artikel (salin persis)",
   "jenis_masalah": "kategori singkat masalah",
-  "kriteria_yang_digunakan": "kriteria penilaian yang dipakai",
-  "alasan_kriteria_relevan": "mengapa kriteria ini relevan untuk jenis artikel ini",
   "masalah": "penjelasan masalah",
-  "alasan": "alasan akademik/metodologis",
-  "dampak": "dampak terhadap kualitas artikel",
+  "alasan": "alasan akademik/metodologis, maksimal 3 kalimat",
+  "dampak": "dampak terhadap kualitas artikel, maksimal 2 kalimat",
   "tindakan_revisi": "tindakan revisi yang disarankan",
-  "contoh_revisi": "contoh kalimat/paragraf hasil revisi",
+  "contoh_revisi": "contoh revisi maksimal 1 paragraf pendek (tanpa mengarang data)",
   "status_contoh": "dapat digunakan / template / memerlukan data penulis",
   "keterkaitan": [{"bagian": "bagian lain", "penjelasan": "hubungannya"}],
   "keyakinan": "tinggi/sedang/rendah"
 }
 """.strip()
+
+
+def finding_schema_text(mode=MODE_MENDALAM):
+    if mode == MODE_RINGKAS:
+        return FINDING_SCHEMA_RINGKAS
+    return FINDING_SCHEMA_MENDALAM
+
+
+# Kompatibilitas nama lama.
+FINDING_SCHEMA_TEXT = FINDING_SCHEMA_MENDALAM
 
 EVIDENCE_RULES = """
 ATURAN BUKTI (wajib untuk semua temuan):
@@ -62,13 +91,51 @@ ATURAN BUKTI (wajib untuk semua temuan):
 - Contoh revisi tidak boleh mengarang angka, data, sitasi, atau sumber baru. Bila membutuhkan data penulis, gunakan placeholder eksplisit seperti "[Tuliskan dasar pemilihan kelas III A dan III B sebagai sampel.]" dan set "status_contoh" = "memerlukan data penulis".
 """.strip()
 
-OUTPUT_QUALITY_RULES = """
-KUALITAS KELUARAN:
-- "masalah_teridentifikasi" adalah array DINAMIS: laporkan SEMUA masalah penting yang benar-benar ditemukan (jangan dibatasi dua), tanpa pengulangan.
-- Maksimal 15 masalah utama; masalah minor kebahasaan yang serupa boleh dikelompokkan menjadi satu temuan.
-- Seluruh masalah kritis dan mayor wajib ditampilkan; urutkan dari kritis -> mayor -> minor.
-- Isi "jumlah_masalah" (kritis/mayor/minor), "prioritas_revisi" (tiga prioritas pertama), "status_kesiapan" (mis. "siap", "perlu revisi minor", "perlu revisi mayor"), dan "skor" 0-100.
+COMMON_FOCUS_RULES = """
+- JANGAN melaporkan temuan minor kosmetik: tata bahasa ringan, pilihan kata,
+  variasi gaya, pengulangan kecil yang tidak mengubah makna, masalah format
+  kecil, atau saran opsional.
+- Fokus HANYA pada masalah yang berdampak nyata terhadap validitas, konsistensi,
+  interpretasi, atau keterbacaan substantif artikel.
+- Jangan mengulang masalah yang sudah dilaporkan pada tahap lain, kecuali ada
+  alasan lintas bagian yang jelas.
+- Jangan menuliskan daftar unsur/aspek yang sudah benar dan jangan mengulang isi
+  artikel sebagai rangkuman panjang.
 """.strip()
+
+OUTPUT_QUALITY_RINGKAS = f"""
+KUALITAS KELUARAN (MODE RINGKAS):
+- Maksimal 5 temuan; utamakan 3 temuan paling penting. Keluaran yang melebihi
+  batas ini akan dipotong sistem.
+- HANYA prioritas kritis dan mayor. Jangan melaporkan temuan minor.
+{COMMON_FOCUS_RULES}
+- Kutipan asli maksimal 1 kalimat pendek; "masalah" maksimal 2 kalimat;
+  "tindakan_revisi" maksimal 2 kalimat.
+- Tanpa uraian dampak, tanpa contoh revisi, tanpa bagian kekuatan, tanpa
+  matriks/tabel audit.
+- Isi "status_kesiapan" dan "skor" 0-100.
+- Jika tidak ada masalah kritis/mayor, isi "masalah_teridentifikasi": [] dan
+  "ringkasan": "Tidak ditemukan masalah mayor yang memerlukan revisi pada tahap ini."
+""".strip()
+
+OUTPUT_QUALITY_MENDALAM = f"""
+KUALITAS KELUARAN (MODE MENDALAM):
+- Maksimal 8 temuan; keluaran yang melebihi batas ini akan dipotong sistem.
+- Prioritaskan kritis dan mayor. Temuan minor hanya boleh dilaporkan bila
+  berdampak langsung pada validitas penelitian atau kejelasan interpretasi.
+{COMMON_FOCUS_RULES}
+- Kutipan asli maksimal 2 kalimat; "alasan" maksimal 3 kalimat; "dampak"
+  maksimal 2 kalimat; "contoh_revisi" maksimal 1 paragraf pendek.
+- Urutkan dari kritis -> mayor -> minor.
+- Isi "jumlah_masalah" (kritis/mayor/minor), "prioritas_revisi" (maksimal tiga),
+  "status_kesiapan", dan "skor" 0-100.
+""".strip()
+
+
+def output_quality_rules(mode=MODE_MENDALAM):
+    if mode == MODE_RINGKAS:
+        return OUTPUT_QUALITY_RINGKAS
+    return OUTPUT_QUALITY_MENDALAM
 
 
 def _context_block(name, text, limit=6000):
@@ -87,7 +154,19 @@ def _profile_block(profile_summary):
     )
 
 
-def base_output_schema(extra_fields=""):
+def base_output_schema(extra_fields="", mode=MODE_MENDALAM):
+    if mode == MODE_RINGKAS:
+        # Mode ringkas: skema minimal tanpa versi revisi dan tanpa field tambahan.
+        return (
+            "Format JSON wajib:\n"
+            "{\n"
+            '  "ringkasan": "maksimal 2 kalimat",\n'
+            '  "skor": 0,\n'
+            '  "status_kesiapan": "siap/perlu revisi minor/perlu revisi mayor",\n'
+            '  "masalah_teridentifikasi": [ ...objek masalah skema minimal... ],\n'
+            '  "catatan_data_yang_harus_dilengkapi": ["hanya bila ada data yang harus dilengkapi penulis"]\n'
+            "}"
+        )
     extra = (",\n" + extra_fields) if extra_fields else ""
     return (
         "Format JSON wajib:\n"
@@ -167,13 +246,18 @@ Teks artikel dengan penanda lokasi:
 # Judul
 # ---------------------------------------------------------------------------
 
-def build_title_prompt(title_text, profile_summary, article_context):
+def build_title_prompt(title_text, profile_summary, article_context, mode=MODE_MENDALAM):
+    evaluation_note = (
+        "maksimal 2 kalimat" if mode == MODE_RINGKAS else "evaluasi rinci"
+    )
     return f"""
 Tugas: evaluasi JUDUL artikel dan beri rekomendasi judul baru.
 
 {_profile_block(profile_summary)}
 
 {EVIDENCE_RULES}
+
+{output_quality_rules(mode)}
 
 Periksa: kejelasan, kesesuaian dengan isi/konteks artikel, kecocokan dengan jenis
 penelitian terdeteksi, panjang, ambiguitas, dan daya tarik akademik. Jangan
@@ -182,14 +266,14 @@ mengarang variabel, lokasi, atau metode yang tidak ada.
 Format JSON wajib:
 {{
   "judul_awal": "judul asli",
-  "evaluasi_judul": "evaluasi rinci",
-  "masalah_teridentifikasi": [ ...objek masalah universal (kode ID: JDL)... ],
+  "evaluasi_judul": "{evaluation_note}",
+  "masalah_teridentifikasi": [ ...objek masalah (kode ID: JDL)... ],
   "alternatif_judul": ["judul 1", "judul 2", "judul 3"],
   "judul_rekomendasi": "judul terbaik",
   "skor": 0
 }}
 
-{FINDING_SCHEMA_TEXT}
+{finding_schema_text(mode)}
 
 Judul asli:
 \"\"\"{title_text}\"\"\"
@@ -214,10 +298,31 @@ ABSTRACT_ELEMENTS = [
 ]
 
 
-def build_abstract_prompt(profile_summary, type_key, abstract_struct, context):
+def build_abstract_prompt(profile_summary, type_key, abstract_struct, context, mode=MODE_MENDALAM):
     elements = "\n".join(f"- {item}" for item in ABSTRACT_ELEMENTS)
+    if mode == MODE_RINGKAS:
+        detail_blocks = (
+            "Gunakan daftar unsur di atas hanya sebagai acuan pemeriksaan; JANGAN "
+            "membuat daftar status unsur. Laporkan kekurangan unsur penting "
+            "langsung sebagai objek masalah.\n\n"
+            + base_output_schema(mode=mode)
+        )
+    else:
+        detail_blocks = (
+            '"versi_revisi" adalah abstrak perbaikan utuh: tidak boleh mengarang '
+            "angka; angka hanya boleh diambil dari bagian hasil artikel; informasi "
+            "yang belum ada ditulis sebagai placeholder [ ... ] dan dicatat pada "
+            '"catatan_data_yang_harus_dilengkapi".\n\n'
+            + base_output_schema(
+                '  "pemeriksaan_unsur": [{"unsur": "...", "status": "tidak ada/kurang rinci/tidak konsisten", "bukti": "kutipan atau -", "catatan": "..."}],\n'
+                '  "ketidaksesuaian_dengan_artikel": [{"aspek": "...", "kutipan_abstrak": "...", "kutipan_artikel": "...", "lokasi_artikel": "...", "penjelasan": "..."}]',
+                mode=mode,
+            )
+            + '\nCatatan: isi "pemeriksaan_unsur" HANYA untuk unsur yang bermasalah; '
+            "jangan mencantumkan unsur yang sudah benar atau tidak relevan."
+        )
     return f"""
-Tugas: analisis ABSTRAK secara rinci dan bandingkan dengan artikel lengkap
+Tugas: analisis ABSTRAK dan bandingkan dengan artikel lengkap
 (khususnya metodologi, hasil utama, dan kesimpulan yang diberikan di bawah).
 
 {_profile_block(profile_summary)}
@@ -226,31 +331,22 @@ Tugas: analisis ABSTRAK secara rinci dan bandingkan dengan artikel lengkap
 
 {EVIDENCE_RULES}
 
-{OUTPUT_QUALITY_RULES}
+{output_quality_rules(mode)}
 
-Pemeriksaan unsur abstrak (nilai HANYA unsur yang relevan dengan jenis artikel;
-unsur yang tidak relevan diberi status "tidak relevan untuk jenis artikel ini"):
+FOKUS UTAMA TAHAP INI: kelengkapan tujuan, metode, subjek, hasil utama, dan
+kesimpulan dalam abstrak, serta ketidaksesuaian abstrak dengan isi artikel.
+
+Unsur abstrak yang relevan untuk jenis artikel ini (acuan pemeriksaan):
 {elements}
 
-Periksa juga: konsistensi abstrak Indonesia dan Inggris (bila keduanya ada),
-panjang dan keterbacaan, klaim yang terlalu luas, klaim kausal yang tidak
-didukung desain, dan istilah yang berubah-ubah.
+Periksa juga: klaim yang terlalu luas, klaim kausal yang tidak didukung desain,
+dan istilah yang berubah-ubah. Setiap ketidaksesuaian abstrak dengan konteks
+artikel (mis. jumlah/jenis instrumen berbeda, hasil "signifikan" tanpa nilai
+statistik di bagian hasil) wajib dilaporkan sebagai objek masalah.
 
-Wajib bandingkan abstrak dengan konteks artikel: setiap ketidaksesuaian
-(mis. jumlah/jenis instrumen berbeda antara abstrak dan metodologi, hasil
-"signifikan" tanpa nilai statistik yang tersedia di bagian hasil) dimasukkan ke
-"ketidaksesuaian_dengan_artikel" DAN sebagai objek masalah.
+{detail_blocks}
 
-"versi_revisi" adalah abstrak perbaikan utuh: tidak boleh mengarang angka; angka
-hanya boleh diambil dari bagian hasil artikel; informasi yang belum ada ditulis
-sebagai placeholder [ ... ] dan dicatat pada "catatan_data_yang_harus_dilengkapi".
-
-{base_output_schema(
-    '  "pemeriksaan_unsur": [{"unsur": "...", "status": "ada/tidak ada/kurang rinci/tidak konsisten/tidak relevan untuk jenis artikel ini", "bukti": "kutipan atau -", "catatan": "..."}],\n'
-    '  "ketidaksesuaian_dengan_artikel": [{"aspek": "...", "kutipan_abstrak": "...", "kutipan_artikel": "...", "lokasi_artikel": "...", "penjelasan": "..."}]'
-)}
-
-{FINDING_SCHEMA_TEXT}
+{finding_schema_text(mode)}
 
 Abstrak (dengan penanda lokasi):
 \"\"\"{format_section_for_prompt(abstract_struct)}\"\"\"
@@ -271,9 +367,25 @@ INTRO_FUNCTIONS = (
 )
 
 
-def build_introduction_prompt(profile_summary, type_key, intro_struct, context, batch_note=""):
+def build_introduction_prompt(profile_summary, type_key, intro_struct, context, batch_note="", mode=MODE_MENDALAM):
+    if mode == MODE_RINGKAS:
+        detail_blocks = base_output_schema(mode=mode)
+    else:
+        detail_blocks = (
+            '"versi_revisi" harus mempertahankan seluruh sitasi yang valid dan '
+            "TIDAK boleh menambah sumber baru.\n\n"
+            + base_output_schema(
+                '  "peta_fungsi_paragraf": [{"paragraf": 1, "fungsi_yang_diharapkan": "...", "fungsi_aktual": "...", "status": "perlu revisi/tidak sesuai", "alasan": "...", "saran": "..."}],\n'
+                '  "evaluasi_gap_penelitian": "...",\n'
+                '  "evaluasi_tujuan_dan_rumusan_masalah": "..."',
+                mode=mode,
+            )
+            + '\nCatatan: isi "peta_fungsi_paragraf" HANYA untuk paragraf yang '
+            "bermasalah (perlu revisi/tidak sesuai); jangan mencantumkan paragraf "
+            "yang sudah sesuai."
+        )
     return f"""
-Tugas: analisis PENDAHULUAN per paragraf secara rinci.{batch_note}
+Tugas: analisis PENDAHULUAN per paragraf.{batch_note}
 
 {_profile_block(profile_summary)}
 
@@ -281,28 +393,22 @@ Tugas: analisis PENDAHULUAN per paragraf secara rinci.{batch_note}
 
 {EVIDENCE_RULES}
 
-{OUTPUT_QUALITY_RULES}
+{output_quality_rules(mode)}
 
-Petakan fungsi SETIAP paragraf terhadap fungsi retorika pendahuluan
-({INTRO_FUNCTIONS}) dalam "peta_fungsi_paragraf".
+FOKUS UTAMA TAHAP INI: kejelasan masalah penelitian, gap penelitian, novelty,
+dukungan sitasi terhadap klaim, dan kejelasan tujuan penelitian.
 
-Periksa secara khusus: alur umum -> khusus; pengulangan ide; lompatan logika;
-kutipan yang tidak mendukung klaim; klaim tanpa kutipan; data awal
-(observasi/pretest) yang sumber dan prosedurnya tidak dijelaskan; gap penelitian
-yang hanya berupa klaim "belum banyak penelitian"; novelty yang belum dibedakan
-dari sekadar gabungan variabel; ketidaksesuaian tujuan dengan judul; istilah
-tidak konsisten; kalimat terlalu panjang; kesalahan konsep; generalisasi tidak tepat.
+Fungsi retorika pendahuluan sebagai acuan: {INTRO_FUNCTIONS}.
 
-"versi_revisi" harus mempertahankan seluruh sitasi yang valid dan TIDAK boleh
-menambah sumber baru.
+Periksa secara khusus: lompatan logika; klaim tanpa kutipan; kutipan yang tidak
+mendukung klaim; data awal (observasi/pretest) yang sumber dan prosedurnya tidak
+dijelaskan; gap penelitian yang hanya berupa klaim "belum banyak penelitian";
+novelty yang belum dibedakan dari sekadar gabungan variabel; ketidaksesuaian
+tujuan dengan judul; kesalahan konsep; generalisasi tidak tepat.
 
-{base_output_schema(
-    '  "peta_fungsi_paragraf": [{"paragraf": 1, "fungsi_yang_diharapkan": "...", "fungsi_aktual": "...", "status": "sesuai/perlu revisi/tidak sesuai", "alasan": "...", "saran": "..."}],\n'
-    '  "evaluasi_gap_penelitian": "...",\n'
-    '  "evaluasi_tujuan_dan_rumusan_masalah": "..."'
-)}
+{detail_blocks}
 
-{FINDING_SCHEMA_TEXT}
+{finding_schema_text(mode)}
 
 Pendahuluan (dengan penanda lokasi):
 \"\"\"{intro_struct}\"\"\"
@@ -316,9 +422,34 @@ Konteks artikel (judul, abstrak, metodologi ringkas):
 # Metodologi
 # ---------------------------------------------------------------------------
 
-def build_methodology_prompt(profile_summary, type_key, method_struct, context):
+def build_methodology_prompt(profile_summary, type_key, method_struct, context, mode=MODE_MENDALAM):
     components = methodology_components_for(type_key)
     component_list = "\n".join(f"- {item}" for item in components)
+    if mode == MODE_RINGKAS:
+        detail_blocks = (
+            "Gunakan daftar komponen di atas hanya sebagai acuan; JANGAN membuat "
+            "daftar status komponen. Laporkan komponen penting yang tidak ada atau "
+            "tidak konsisten langsung sebagai objek masalah.\n\n"
+            + base_output_schema(mode=mode)
+        )
+    else:
+        detail_blocks = (
+            "Setiap komponen BERMASALAH dalam \"pemeriksaan_komponen\" memakai format:\n"
+            '{"komponen": "...", "status": "sebagian/tidak ada/tidak konsisten",\n'
+            '  "bukti": ["kutipan asli"], "masalah": "...", "saran": "...",\n'
+            '  "memerlukan_data_penulis": true/false}\n\n'
+            '"versi_revisi": JANGAN menulis ulang metodologi menjadi paragraf yang '
+            "tampak lengkap dengan mengisi informasi yang tidak ada. Gunakan "
+            "placeholder eksplisit, misalnya "
+            '"[Tuliskan dasar pemilihan kelas III A dan III B sebagai sampel.]".\n\n'
+            + base_output_schema(
+                '  "pemeriksaan_komponen": [ ...hanya komponen bermasalah... ],\n'
+                '  "kesesuaian_metode_dengan_tujuan": "..."',
+                mode=mode,
+            )
+            + '\nCatatan: JANGAN mencantumkan komponen yang sudah lengkap atau '
+            "tidak relevan dalam \"pemeriksaan_komponen\"."
+        )
     return f"""
 Tugas: analisis METODOLOGI per komponen sesuai jenis artikel.
 
@@ -328,32 +459,23 @@ Tugas: analisis METODOLOGI per komponen sesuai jenis artikel.
 
 {EVIDENCE_RULES}
 
-{OUTPUT_QUALITY_RULES}
+{output_quality_rules(mode)}
 
-Nilai komponen berikut dalam "pemeriksaan_komponen" (hanya yang relevan dengan
-jenis artikel; komponen yang tidak relevan cukup ditandai
-"tidak relevan untuk jenis artikel ini" tanpa dijadikan masalah):
+FOKUS UTAMA TAHAP INI: desain; subjek/sampel/informan; teknik sampling;
+instrumen; validitas/reliabilitas atau trustworthiness; prosedur; analisis
+data; etika penelitian bila relevan.
+
+Komponen yang relevan dengan jenis artikel ini (komponen yang tidak relevan
+JANGAN dijadikan masalah):
 {component_list}
 
-Setiap komponen memakai format:
-{{"komponen": "...", "status": "lengkap/sebagian/tidak ada/tidak konsisten/tidak relevan untuk jenis artikel ini",
-  "bukti": ["kutipan asli"], "masalah": "...", "alasan": "...", "dampak": "...",
-  "saran": "...", "contoh_revisi": "...", "memerlukan_data_penulis": true/false}}
-
 Periksa pula ketidakkonsistenan internal (istilah berganti-ganti, jumlah
-instrumen/butir tidak konsisten, urutan prosedur tidak sistematis, pengulangan,
-klaim kausal melebihi kekuatan desain).
+instrumen/butir tidak konsisten, urutan prosedur tidak sistematis, klaim kausal
+melebihi kekuatan desain).
 
-"versi_revisi": JANGAN menulis ulang metodologi menjadi paragraf yang tampak
-lengkap dengan mengisi informasi yang tidak ada. Gunakan placeholder eksplisit,
-misalnya "[Tuliskan dasar pemilihan kelas III A dan III B sebagai sampel.]".
+{detail_blocks}
 
-{base_output_schema(
-    '  "pemeriksaan_komponen": [ ...format komponen di atas... ],\n'
-    '  "kesesuaian_metode_dengan_tujuan": "..."'
-)}
-
-{FINDING_SCHEMA_TEXT}
+{finding_schema_text(mode)}
 
 Metodologi (dengan penanda lokasi):
 \"\"\"{method_struct}\"\"\"
@@ -367,7 +489,25 @@ Konteks artikel (judul, abstrak, tujuan pada pendahuluan):
 # Hasil dan Pembahasan
 # ---------------------------------------------------------------------------
 
-def build_results_discussion_prompt(profile_summary, type_key, section_struct, tables_text, context, batch_note=""):
+def build_results_discussion_prompt(profile_summary, type_key, section_struct, tables_text, context, batch_note="", mode=MODE_MENDALAM):
+    if mode == MODE_RINGKAS:
+        detail_blocks = base_output_schema(mode=mode)
+    else:
+        detail_blocks = (
+            base_output_schema(
+                '  "interpretasi_tabel": [{"tabel": "Tabel N", "angka_yang_dilaporkan": ["..."], "interpretasi_penulis": "...", "status_interpretasi": "tidak tepat/perlu verifikasi", "alasan": "...", "revisi_interpretasi": "..."}],\n'
+                '  "analisis_tema": [{"tema": "...", "status": "perlu penguatan", "masalah": "...", "saran": "..."}],\n'
+                '  "analisis_pembahasan_per_paragraf": [{"paragraf": 1, "hasil_yang_dibahas": "...", "masalah": "...", "saran": "..."}],\n'
+                '  "versi_revisi_hasil": "...",\n'
+                '  "versi_revisi_pembahasan": "..."',
+                mode=mode,
+            )
+            + '\nCatatan: isi "interpretasi_tabel" HANYA untuk interpretasi yang tidak '
+            'tepat atau perlu verifikasi; "analisis_tema" HANYA untuk tema yang perlu '
+            'penguatan (bila ada data kualitatif); "analisis_pembahasan_per_paragraf" '
+            "HANYA untuk paragraf pembahasan yang bermasalah. Jangan mencantumkan "
+            "butir yang sudah baik."
+        )
     return f"""
 Tugas: analisis HASIL dan PEMBAHASAN secara terpisah walaupun berada dalam satu
 heading, sesuai bentuk data artikel.{batch_note}
@@ -378,47 +518,31 @@ heading, sesuai bentuk data artikel.{batch_note}
 
 {EVIDENCE_RULES}
 
-{OUTPUT_QUALITY_RULES}
+{output_quality_rules(mode)}
+
+FOKUS UTAMA TAHAP INI: kesesuaian data dengan interpretasi; klaim tanpa bukti;
+kesalahan statistik; pembahasan yang hanya mengulang hasil; tidak adanya dialog
+dengan penelitian terdahulu.
 
 ANALISIS HASIL — sesuaikan dengan bentuk data:
-- Data kuantitatif: urutan penyajian; kesesuaian dengan tujuan/hipotesis;
-  kelengkapan statistik deskriptif, uji prasyarat, ketepatan pemilihan uji,
-  pelaporan nilai statistik (nilai uji, df, p, CI bila tersedia), effect size /
-  N-gain bila relevan; konsistensi angka teks vs tabel; klaim signifikan/
-  pengaruh; kesalahan membaca hasil; tabel disebut tapi tidak dijelaskan; data
-  dijelaskan tapi tidak ada di tabel. Setiap temuan statistik dibandingkan
-  dengan tabel terkait dalam "interpretasi_tabel".
-- Data kualitatif: kejelasan tema; hubungan kategori-tema; bukti kutipan
-  partisipan dan keberagamannya; negative cases; pemisahan data vs interpretasi;
-  kedalaman analisis (bukan sekadar ringkasan wawancara); keterlacakan tema ke
-  sumber data — laporkan dalam "analisis_tema".
-- Studi literatur/review: apakah sintesis menghasilkan pola/tema/tipologi/tren/
-  kesenjangan, bukan daftar ringkasan.
+- Data kuantitatif: ketepatan pemilihan dan pelaporan uji statistik (nilai uji,
+  df, p, effect size/N-gain bila relevan); konsistensi angka teks vs tabel;
+  klaim signifikan/pengaruh tanpa nilai statistik; kesalahan membaca hasil;
+  tabel disebut tapi tidak dijelaskan atau sebaliknya.
+- Data kualitatif: kejelasan tema; bukti kutipan partisipan; pemisahan data vs
+  interpretasi; kedalaman analisis (bukan sekadar ringkasan wawancara).
+- Studi literatur/review: sintesis menghasilkan pola/tema/tren, bukan daftar
+  ringkasan.
 - Mixed methods: hasil tiap komponen DAN kualitas integrasinya.
 JANGAN mengarang nilai statistik yang tidak tersedia.
 
-ANALISIS PEMBAHASAN — untuk setiap paragraf pembahasan isi
-"analisis_pembahasan_per_paragraf": hasil yang dibahas; bukti (statistik/tema)
-yang menjadi dasar; interpretasi penulis; teori/penelitian terdahulu yang
-dipakai; kualitas hubungan logis; masalah; saran penguatan; contoh revisi.
-Tandai eksplisit pembahasan yang tidak memiliki dasar pada hasil. Periksa juga:
-menjawab tujuan; menjelaskan mekanisme (mis. pedagogis); membandingkan dengan
-penelitian sebelumnya; tidak hanya mengulang angka; membahas effect size (bila
-kuantitatif); temuan yang tidak sesuai harapan; keterbatasan; implikasi.
+ANALISIS PEMBAHASAN: tandai pembahasan yang tidak memiliki dasar pada hasil,
+yang hanya mengulang angka, atau yang tidak berdialog dengan teori/penelitian
+terdahulu; periksa apakah pembahasan menjawab tujuan penelitian.
 
-{base_output_schema(
-    '  "analisis_hasil": {"ringkasan": "...", "masalah_utama": ["..."]},\n'
-    '  "interpretasi_tabel": [{"tabel": "Tabel N", "variabel": "...", "angka_yang_dilaporkan": ["..."], "interpretasi_penulis": "...", "status_interpretasi": "tepat/tidak tepat/perlu verifikasi", "alasan": "...", "revisi_interpretasi": "..."}],\n'
-    '  "analisis_tema": [{"tema": "...", "status": "kuat/perlu penguatan", "bukti_yang_digunakan": ["..."], "masalah": "...", "saran": "..."}],\n'
-    '  "analisis_pembahasan_per_paragraf": [{"paragraf": 1, "hasil_yang_dibahas": "...", "bukti_dasar": "...", "interpretasi_penulis": "...", "rujukan_teori": "...", "kualitas_hubungan_logis": "...", "masalah": "...", "saran": "...", "contoh_revisi": "..."}],\n'
-    '  "versi_revisi_hasil": "...",\n'
-    '  "versi_revisi_pembahasan": "..."'
-)}
-Catatan: "analisis_tema" hanya diisi bila artikel memuat data kualitatif;
-"interpretasi_tabel" hanya bila ada tabel/angka. "versi_revisi" boleh berisi
-gabungan ringkas hasil+pembahasan revisi.
+{detail_blocks}
 
-{FINDING_SCHEMA_TEXT}
+{finding_schema_text(mode)}
 
 Hasil dan pembahasan (dengan penanda lokasi):
 \"\"\"{section_struct}\"\"\"
@@ -435,7 +559,23 @@ Konteks artikel (tujuan, metodologi ringkas):
 # Kesimpulan
 # ---------------------------------------------------------------------------
 
-def build_conclusion_prompt(profile_summary, type_key, conclusion_struct, context):
+def build_conclusion_prompt(profile_summary, type_key, conclusion_struct, context, mode=MODE_MENDALAM):
+    if mode == MODE_RINGKAS:
+        detail_blocks = (
+            "Uji setiap klaim kesimpulan terhadap bukti di bagian hasil; laporkan "
+            "klaim yang tidak/sebagian didukung langsung sebagai objek masalah "
+            "(JANGAN membuat matriks klaim).\n\n" + base_output_schema(mode=mode)
+        )
+    else:
+        detail_blocks = (
+            base_output_schema(
+                '  "matriks_klaim": [{"klaim_kesimpulan": "...", "bukti_pendukung_dalam_hasil": ["kutipan hasil"], "status": "sebagian didukung/tidak didukung", "alasan": "...", "revisi_klaim": "..."}]',
+                mode=mode,
+            )
+            + '\nCatatan: isi "matriks_klaim" HANYA untuk klaim yang sebagian '
+            "didukung atau tidak didukung; klaim yang sudah didukung penuh tidak "
+            "perlu dicantumkan."
+        )
     return f"""
 Tugas: analisis KESIMPULAN dan uji setiap klaimnya terhadap hasil.
 
@@ -445,29 +585,26 @@ Tugas: analisis KESIMPULAN dan uji setiap klaimnya terhadap hasil.
 
 {EVIDENCE_RULES}
 
-{OUTPUT_QUALITY_RULES}
+{output_quality_rules(mode)}
+
+FOKUS UTAMA TAHAP INI: klaim yang melebihi hasil; tujuan penelitian yang tidak
+terjawab; generalisasi berlebihan; implikasi tanpa dasar.
 
 Periksa sesuai jenis artikel:
 - Umum: apakah kesimpulan menjawab tujuan; seluruh klaim berasal dari hasil;
-  ada angka/klaim baru yang tidak muncul di hasil; terlalu umum; implikasi
-  terlalu luas; saran muncul tanpa dasar.
+  ada angka/klaim baru yang tidak muncul di hasil; implikasi terlalu luas.
 - Kuantitatif: kesesuaian dengan hasil numerik; batas generalisasi; pembedaan
   signifikansi statistik vs makna praktis; ketepatan istilah "berpengaruh",
-  "efektif", "meningkatkan" terhadap desain; pertimbangan effect size.
+  "efektif", "meningkatkan" terhadap desain.
 - Kualitatif: kesesuaian dengan tema; batas transferabilitas; tidak melakukan
-  generalisasi statistik; tidak menghapus variasi pengalaman; tidak menambah tema baru.
-- Studi literatur/review: sesuai sintesis; batas basis data/cakupan; tidak
-  menyimpulkan lebih luas dari literatur yang dikaji.
-- Konseptual: sesuai argumen/proposisi; kejelasan kontribusi teoretis; batas
-  penerapan konsep.
+  generalisasi statistik; tidak menambah tema baru.
+- Studi literatur/review: sesuai sintesis; tidak menyimpulkan lebih luas dari
+  literatur yang dikaji.
+- Konseptual: sesuai argumen/proposisi; batas penerapan konsep.
 
-Buat "matriks_klaim": setiap klaim kesimpulan diuji terhadap bukti di bagian hasil.
+{detail_blocks}
 
-{base_output_schema(
-    '  "matriks_klaim": [{"klaim_kesimpulan": "...", "bukti_pendukung_dalam_hasil": ["kutipan hasil"], "status": "didukung/sebagian didukung/tidak didukung", "alasan": "...", "revisi_klaim": "..."}]'
-)}
-
-{FINDING_SCHEMA_TEXT}
+{finding_schema_text(mode)}
 
 Kesimpulan (dengan penanda lokasi):
 \"\"\"{conclusion_struct}\"\"\"
@@ -488,13 +625,35 @@ CROSS_SECTION_ASPECTS = [
 ]
 
 
-def build_cross_section_prompt(profile_summary, type_key, section_texts, citation_summary):
+def build_cross_section_prompt(profile_summary, type_key, section_texts, citation_summary, mode=MODE_MENDALAM):
     aspects = "\n".join(f"- {aspect}" for aspect in CROSS_SECTION_ASPECTS)
+    section_limit = 3500 if mode == MODE_RINGKAS else 7000
     context_blocks = "\n\n".join(
-        _context_block(label, text, limit=7000) for label, text in section_texts
+        _context_block(label, text, limit=section_limit) for label, text in section_texts
     )
+    if mode == MODE_RINGKAS:
+        detail_blocks = (
+            "Laporkan setiap ketidakselarasan langsung sebagai objek masalah "
+            "(JANGAN membuat matriks keselarasan). Aspek yang sudah selaras tidak "
+            "perlu dilaporkan.\n\n" + base_output_schema(mode=mode)
+        )
+    else:
+        detail_blocks = (
+            "Setiap inkonsistensi WAJIB menyertakan bukti kutipan dari KEDUA bagian:\n"
+            '{"aspek": "...", "bagian_1": {"lokasi": "...", "kutipan": "..."},\n'
+            '  "bagian_2": {"lokasi": "...", "kutipan": "..."},\n'
+            '  "status": "tidak selaras/perlu verifikasi",\n'
+            '  "masalah": "...", "dampak": "...", "saran": "..."}\n\n'
+            + base_output_schema(
+                '  "matriks_keselarasan": [ ...hanya aspek yang tidak selaras atau perlu verifikasi... ]',
+                mode=mode,
+            )
+            + '\nCatatan: isi "matriks_keselarasan" HANYA untuk aspek yang tidak '
+            "selaras atau perlu verifikasi; aspek yang selaras atau tidak relevan "
+            "tidak perlu dicantumkan."
+        )
     return f"""
-Tugas: periksa KESELARASAN LINTAS BAGIAN artikel dan buat matriks keselarasan.
+Tugas: periksa KESELARASAN LINTAS BAGIAN artikel.
 
 {_profile_block(profile_summary)}
 
@@ -502,28 +661,22 @@ Tugas: periksa KESELARASAN LINTAS BAGIAN artikel dan buat matriks keselarasan.
 
 {EVIDENCE_RULES}
 
-{OUTPUT_QUALITY_RULES}
+{output_quality_rules(mode)}
 
-Aspek yang wajib diperiksa (lewati aspek yang tidak relevan dengan jenis
-artikel, mis. "Hipotesis ↔ Uji statistik" untuk artikel kualitatif — tulis
-statusnya "tidak relevan untuk jenis artikel ini"):
+FOKUS UTAMA TAHAP INI: tujuan vs metode; metode vs hasil; hasil vs kesimpulan;
+abstrak vs isi; judul vs isi.
+
+Aspek yang diperiksa (lewati aspek yang tidak relevan dengan jenis artikel,
+mis. "Hipotesis ↔ Uji statistik" untuk artikel kualitatif):
 {aspects}
-
-Setiap inkonsistensi WAJIB menyertakan bukti kutipan dari KEDUA bagian:
-{{"aspek": "...", "bagian_1": {{"lokasi": "...", "kutipan": "..."}},
-  "bagian_2": {{"lokasi": "...", "kutipan": "..."}},
-  "status": "selaras/tidak selaras/perlu verifikasi/tidak relevan untuk jenis artikel ini",
-  "masalah": "...", "dampak": "...", "saran": "..."}}
 
 Hasil pencocokan sitasi-daftar pustaka sudah dihitung secara deterministik oleh
 sistem (JANGAN menghitung ulang; gunakan sebagai fakta):
 {json.dumps(citation_summary, ensure_ascii=False, indent=1)}
 
-{base_output_schema(
-    '  "matriks_keselarasan": [ ...format aspek di atas... ]'
-)}
+{detail_blocks}
 
-{FINDING_SCHEMA_TEXT}
+{finding_schema_text(mode)}
 
 Ringkasan setiap bagian artikel:
 {context_blocks}
@@ -534,28 +687,49 @@ Ringkasan setiap bagian artikel:
 # Penjelasan sitasi (pencocokan sudah deterministik)
 # ---------------------------------------------------------------------------
 
-def build_citation_explanation_prompt(citation_result, reference_texts):
+def build_citation_explanation_prompt(citation_result, reference_texts, mode=MODE_MENDALAM):
     matching = citation_result["pencocokan"]
+    group_limit = 15 if mode == MODE_RINGKAS else 30
     payload = {
         "statistik": matching["statistik"],
-        "sitasi_tanpa_referensi": matching["sitasi_tanpa_referensi"][:30],
-        "tahun_tidak_cocok": matching["tahun_tidak_cocok"][:30],
-        "kemungkinan_cocok": matching["kemungkinan_cocok"][:30],
-        "referensi_tidak_pernah_disitasi": matching["referensi_tidak_pernah_disitasi"][:30],
-        "referensi_duplikat": matching["referensi_duplikat"][:30],
-        "referensi_tidak_lengkap": matching["referensi_tidak_lengkap"][:30],
-        "sitasi_sekunder": matching["sitasi_sekunder"][:30],
+        "sitasi_tanpa_referensi": matching["sitasi_tanpa_referensi"][:group_limit],
+        "tahun_tidak_cocok": matching["tahun_tidak_cocok"][:group_limit],
+        "kemungkinan_cocok": matching["kemungkinan_cocok"][:group_limit],
+        "referensi_tidak_pernah_disitasi": matching["referensi_tidak_pernah_disitasi"][:group_limit],
+        "referensi_duplikat": matching["referensi_duplikat"][:group_limit],
+        "referensi_tidak_lengkap": matching["referensi_tidak_lengkap"][:group_limit],
+        "sitasi_sekunder": matching["sitasi_sekunder"][:group_limit],
     }
+    if mode == MODE_RINGKAS:
+        mode_rules = (
+            "MODE RINGKAS:\n"
+            "- \"penjelasan_masalah\" hanya untuk kelompok yang benar-benar bermasalah, "
+            "masing-masing maksimal 2 kalimat, tanpa field \"dampak\".\n"
+            "- \"evaluasi_kepatuhan_apa_7\" maksimal 5 entri dengan kesalahan APA MAYOR "
+            "saja (bukan variasi format kecil).\n"
+            "- \"daftar_perbaikan_yang_direkomendasikan\" maksimal 5 butir singkat."
+        )
+        reference_limit = 10000
+    else:
+        mode_rules = (
+            "MODE MENDALAM:\n"
+            "- Jelaskan hanya kelompok yang bermasalah (dampak dan cara memperbaiki).\n"
+            "- \"evaluasi_kepatuhan_apa_7\" maksimal 10 entri dengan kesalahan APA "
+            "mayor; jangan mencantumkan entri yang sudah benar."
+        )
+        reference_limit = 15000
     return f"""
 Tugas: jelaskan temuan pencocokan sitasi-daftar pustaka dan periksa format APA 7.
 
 PENTING: pasangan sitasi-referensi SUDAH ditentukan secara deterministik oleh
 kode Python di bawah. JANGAN mengubah, menambah, atau menghapus pasangan.
 Tugas Anda hanya:
-1. Menjelaskan setiap kelompok masalah secara akademik (dampak dan cara memperbaiki).
+1. Menjelaskan setiap kelompok masalah secara akademik.
 2. Memeriksa kepatuhan format APA 7 pada entri daftar pustaka yang diberikan;
    tampilkan entri asli dan contoh perbaikan HANYA berdasar data bibliografi yang ada.
 3. Jangan mengarang DOI, URL, penulis, judul, atau data bibliografi.
+
+{mode_rules}
 
 Hasil pencocokan deterministik:
 {json.dumps(payload, ensure_ascii=False, indent=1)}
@@ -571,5 +745,5 @@ Format JSON wajib:
 }}
 
 Daftar pustaka:
-\"\"\"{reference_texts[:15000]}\"\"\"
+\"\"\"{reference_texts[:reference_limit]}\"\"\"
 """.strip()
