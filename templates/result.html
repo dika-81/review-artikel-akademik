@@ -479,6 +479,7 @@
 
             {% for key, title in [
               ("sitasi_tanpa_referensi", "Sitasi Tanpa Referensi"),
+              ("sitasi_tanpa_tahun", "Sitasi Tanpa Tahun"),
               ("tahun_tidak_cocok", "Tahun Tidak Cocok"),
               ("kemungkinan_cocok", "Kemungkinan Cocok (Perlu Verifikasi)"),
               ("referensi_tidak_pernah_disitasi", "Referensi Tidak Pernah Disitasi"),
@@ -517,6 +518,10 @@
                 {% endif %}
                 <p>{{ evaluasi.get("ringkasan_kualitas_referensi", "") }}</p>
                 {% if evaluasi.get("penjelasan_masalah") %}{{ generic_table(evaluasi.get("penjelasan_masalah")) }}{% endif %}
+                {% if evaluasi.get("kemungkinan_salah_deteksi") %}
+                  <h3>Kemungkinan Salah Deteksi</h3>
+                  {{ generic_table(evaluasi.get("kemungkinan_salah_deteksi")) }}
+                {% endif %}
                 {% if evaluasi.get("evaluasi_kepatuhan_apa_7") %}
                   <h3>Kepatuhan APA 7</h3>
                   {{ generic_table(evaluasi.get("evaluasi_kepatuhan_apa_7")) }}

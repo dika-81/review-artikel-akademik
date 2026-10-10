@@ -1123,35 +1123,44 @@ def stage_conclusion(structure, result):
     return finalize_section_result(data, structure, "kesimpulan", type_key, mode)
 
 
+CROSS_SECTION_SECTION_CHARS = int(os.getenv("CROSS_SECTION_SECTION_CHARS", "16000"))
+
+
 def stage_cross_section(structure, result):
     profile_summary, type_key = profile_summary_for_prompts(result)
     mode = analysis_mode(result)
-    section_limit = 3500 if mode == "ringkas" else 7000
-    section_texts = []
-    section_texts.append(
+    section_texts = [
         (
             "Judul/awal artikel",
-            format_section_for_prompt(
-                structure["sections"].get("awal"), max_chars=2000
-            ),
+            format_section_for_prompt(structure["sections"].get("awal"), max_chars=2000),
         )
-    )
+    ]
+    incomplete = []
     for key in ("abstrak", "pendahuluan", "metodologi", "hasil_pembahasan", "kesimpulan"):
         section = get_section(structure, key)
-        section_texts.append(
-            (
-                (section or {}).get("label", key.title()),
-                format_section_for_prompt(section, max_chars=section_limit),
-            )
-        )
+        label = (section or {}).get("label", key.title())
+        text = format_section_for_prompt(section, max_chars=CROSS_SECTION_SECTION_CHARS)
+        if not section or not section.get("paragraphs"):
+            incomplete.append(f"{label} tidak terdeteksi")
+        elif "bagian dipotong" in text:
+            incomplete.append(f"{label} terpotong")
+        section_texts.append((label, text))
     citation_summary = run_citation_check(structure)["pencocokan"]["statistik"]
     data = openai_chat_json(
         SYSTEM_ANALYST,
         prompt_builders.build_cross_section_prompt(
-            profile_summary, type_key, section_texts, citation_summary, mode=mode
+            profile_summary, type_key, section_texts, citation_summary,
+            mode=mode, incomplete=incomplete,
         ),
     )
     data = finalize_section_result(data, structure, "konsistensi", type_key, mode)
+    if incomplete:
+        # Jangan beri skor/status "siap" bila input tahap ini tidak utuh.
+        data["skor"] = None
+        data["status_kesiapan"] = "tidak dapat dinilai penuh"
+        notes = list(data.get("catatan_data_yang_harus_dilengkapi") or [])
+        notes.insert(0, "Input tahap ini tidak lengkap: " + "; ".join(incomplete) + ".")
+        data["catatan_data_yang_harus_dilengkapi"] = notes
     data["statistik_sitasi"] = citation_summary
     return data
 
@@ -1523,6 +1532,17 @@ def find_verified_reference_recommendations(result, structure=None):
                     if not existing or reference.get("jumlah_sitasi", 0) > existing.get("jumlah_sitasi", 0):
                         candidates_by_doi[doi] = reference
 
+    existing_dois = set()
+    if structure is not None:
+        reference_text = (get_section(structure, "daftar_pustaka") or {}).get("text", "")
+        existing_dois = {
+            normalize_doi(doi.rstrip(".,;)"))
+            for doi in re.findall(r"10\.\d{4,9}/\S+", reference_text)
+        }
+    for doi in list(candidates_by_doi):
+        if doi in existing_dois:
+            candidates_by_doi.pop(doi)
+
     candidates = sorted(
         candidates_by_doi.values(),
         key=lambda item: item.get("jumlah_sitasi", 0),
@@ -1576,6 +1596,7 @@ def citation_groups_for_display(stage_data):
         return {
             "statistik": matching.get("statistik", {}),
             "sitasi_tanpa_referensi": matching.get("sitasi_tanpa_referensi", []),
+            "sitasi_tanpa_tahun": matching.get("sitasi_tanpa_tahun", []),
             "tahun_tidak_cocok": matching.get("tahun_tidak_cocok", []),
             "kemungkinan_cocok": matching.get("kemungkinan_cocok", []),
             "referensi_tidak_pernah_disitasi": matching.get(
@@ -1590,6 +1611,7 @@ def citation_groups_for_display(stage_data):
     return {
         "statistik": {},
         "sitasi_tanpa_referensi": stage_data.get("sitasi_tanpa_referensi", []),
+        "sitasi_tanpa_tahun": [],
         "tahun_tidak_cocok": [],
         "kemungkinan_cocok": [],
         "referensi_tidak_pernah_disitasi": stage_data.get(
@@ -1883,6 +1905,7 @@ def add_stage_to_pdf(story, stage_key, stage_data, styles, mode="mendalam"):
         for key, label in [
             ("statistik", "Statistik Pencocokan"),
             ("sitasi_tanpa_referensi", "Sitasi Tanpa Referensi"),
+            ("sitasi_tanpa_tahun", "Sitasi Tanpa Tahun"),
             ("tahun_tidak_cocok", "Tahun Tidak Cocok"),
             ("kemungkinan_cocok", "Kemungkinan Cocok (Perlu Verifikasi)"),
             ("referensi_tidak_pernah_disitasi", "Referensi Tidak Pernah Disitasi"),

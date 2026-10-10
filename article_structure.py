@@ -75,6 +75,13 @@ SECTION_DEFINITIONS = [
         {"kesimpulan", "simpulan", "conclusion", "conclusions", "penutup"},
     ),
     (
+        "ucapan_terima_kasih",
+        "Ucapan Terima Kasih",
+        "ACK",
+        {"acknowledgement", "acknowledgements", "acknowledgment",
+         "acknowledgments", "ucapan terima kasih"},
+    ),
+    (
         "daftar_pustaka",
         "Daftar Pustaka",
         "REF",
@@ -243,6 +250,94 @@ def _append_paragraph(section, text):
     section["paragraphs"].append(paragraph)
 
 
+_TEMPLATE_NOISE = re.compile(r"^[_\-\s]+$")
+_TITLE_EXCLUDE = re.compile(r"(?i)https?://|\bvol\.|\bissn\b|@|\bdoi\b|©")
+_KEYWORD_LABEL = re.compile(r"(?i)^(?:keywords?|kata\s+kunci)$")
+
+
+def _table_record(block, section, number, prefix="T"):
+    rows = []
+    for row in block.rows:
+        cells = [cell.text.strip() for cell in row.cells]
+        if any(cells):
+            rows.append(cells)
+    return {
+        "table_number": number,
+        "id": f"{section['code']}-{prefix}{number:02d}",
+        "section": section["key"],
+        "section_label": section["label"],
+        "rows": rows,
+        "text": "\n".join(" | ".join(row) for row in rows),
+    }
+
+
+def _unique_cells(row):
+    """Sel gabungan (merged) muncul berulang di row.cells; ambil sekali saja."""
+    seen = set()
+    for cell in row.cells:
+        if id(cell._tc) not in seen:
+            seen.add(id(cell._tc))
+            yield cell
+
+
+def _cell_texts(cell):
+    texts = (paragraph_full_text(p) for p in cell.paragraphs)
+    return [t for t in texts if t and not _TEMPLATE_NOISE.match(t)]
+
+
+def _harvest_front_matter(front_tables, sections, order):
+    """Ambil judul, abstrak, dan kata kunci dari tabel front matter.
+
+    Abstrak pertama dipakai sebagai abstrak utama; abstrak bahasa kedua
+    disimpan di sections["abstrak"]["abstrak_lain"].
+    """
+    title = None
+    for table in front_tables:
+        for row in table.rows:
+            cells = list(_unique_cells(row))
+            for index, cell in enumerate(cells):
+                texts = _cell_texts(cell)
+                if not texts:
+                    continue
+                label = texts[0].rstrip(":").strip()
+                if match_section_heading(label) == "abstrak" and len(texts) > 1:
+                    if "abstrak" not in sections:
+                        abstrak = _new_section("abstrak")
+                        abstrak["detected"] = True
+                        abstrak["heading"] = label
+                        abstrak["sumber"] = "tabel_template"
+                        for text in texts[1:]:
+                            _append_paragraph(abstrak, text)
+                        sections["abstrak"] = abstrak
+                        order.insert(1, "abstrak")
+                    else:
+                        sections["abstrak"].setdefault("abstrak_lain", []).append(
+                            " ".join(texts[1:])
+                        )
+                    continue
+                if _KEYWORD_LABEL.match(label):
+                    nxt = cells[index + 1] if index + 1 < len(cells) else None
+                    value = " ".join(_cell_texts(nxt)) if nxt else ""
+                    abstrak = sections.get("abstrak")
+                    if value and abstrak and not abstrak.get("keywords_line"):
+                        abstrak["keywords_line"] = value
+                    continue
+                if title is None:
+                    for text in texts:
+                        if len(text.split()) >= 6 and not _TITLE_EXCLUDE.search(text):
+                            title = text
+                            break
+    if title and not sections["awal"]["paragraphs"]:
+        _append_paragraph(sections["awal"], title)
+    # Tabel template disimpan terpisah (prefix F = front matter): tidak masuk
+    # structure["tables"] maupun sections["awal"]["tables"], sehingga tidak
+    # terkirim ulang ke tahap Hasil atau Konsistensi.
+    for number, block in enumerate(front_tables, start=1):
+        sections["awal"].setdefault("tabel_front_matter", []).append(
+            _table_record(block, sections["awal"], number, prefix="F")
+        )
+
+
 def extract_article_structure(path):
     """Ekstrak struktur artikel: bagian, paragraf bernomor, kalimat, dan tabel."""
     try:
@@ -260,7 +355,13 @@ def extract_article_structure(path):
     heading_found = False
     in_abstract_body = False
 
+    front_tables = []
+
     for block in _iter_block_items(document):
+        if isinstance(block, Table) and not heading_found:
+            # Tabel sebelum heading pertama = front matter template jurnal.
+            front_tables.append(block)
+            continue
         if isinstance(block, Table):
             table_counter += 1
             rows = []
@@ -314,6 +415,17 @@ def extract_article_structure(path):
                 continue
 
         _append_paragraph(current, text)
+
+    if front_tables:
+        if heading_found:
+            _harvest_front_matter(front_tables, sections, order)
+        else:
+            # Artikel tanpa heading sama sekali: perlakukan sebagai tabel biasa.
+            for block in front_tables:
+                table_counter += 1
+                table = _table_record(block, sections["awal"], table_counter)
+                tables.append(table)
+                sections["awal"]["tables"].append(table)
 
     for section in sections.values():
         section["text"] = "\n".join(

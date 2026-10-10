@@ -142,7 +142,7 @@ def _context_block(name, text, limit=6000):
     text = (text or "").strip()
     if not text:
         return f"{name}: (tidak tersedia)"
-    if len(text) > limit:
+    if limit and len(text) > limit:
         text = text[:limit] + "\n[...dipotong...]"
     return f"{name}:\n\"\"\"{text}\"\"\""
 
@@ -625,12 +625,21 @@ CROSS_SECTION_ASPECTS = [
 ]
 
 
-def build_cross_section_prompt(profile_summary, type_key, section_texts, citation_summary, mode=MODE_MENDALAM):
+def build_cross_section_prompt(profile_summary, type_key, section_texts, citation_summary,
+                               mode=MODE_MENDALAM, incomplete=None):
     aspects = "\n".join(f"- {aspect}" for aspect in CROSS_SECTION_ASPECTS)
-    section_limit = 3500 if mode == MODE_RINGKAS else 7000
+    # Pemotongan sudah dilakukan di app.py; jangan dipotong lagi di sini.
     context_blocks = "\n\n".join(
-        _context_block(label, text, limit=section_limit) for label, text in section_texts
+        _context_block(label, text, limit=None) for label, text in section_texts
     )
+    incomplete_note = ""
+    if incomplete:
+        incomplete_note = (
+            "PERINGATAN INPUT TIDAK LENGKAP: " + "; ".join(incomplete) + ".\n"
+            "Aspek yang bergantung pada bagian tersebut JANGAN dianggap selaras. "
+            "Jangan menulis 'tidak ditemukan masalah' untuk aspek itu; catat di "
+            "\"catatan_data_yang_harus_dilengkapi\"."
+        )
     if mode == MODE_RINGKAS:
         detail_blocks = (
             "Laporkan setiap ketidakselarasan langsung sebagai objek masalah "
@@ -663,6 +672,8 @@ Tugas: periksa KESELARASAN LINTAS BAGIAN artikel.
 
 {output_quality_rules(mode)}
 
+{incomplete_note}
+
 FOKUS UTAMA TAHAP INI: tujuan vs metode; metode vs hasil; hasil vs kesimpulan;
 abstrak vs isi; judul vs isi.
 
@@ -670,8 +681,9 @@ Aspek yang diperiksa (lewati aspek yang tidak relevan dengan jenis artikel,
 mis. "Hipotesis ↔ Uji statistik" untuk artikel kualitatif):
 {aspects}
 
-Hasil pencocokan sitasi-daftar pustaka sudah dihitung secara deterministik oleh
-sistem (JANGAN menghitung ulang; gunakan sebagai fakta):
+Hasil pencocokan sitasi-daftar pustaka dihitung otomatis oleh sistem (JANGAN
+menghitung ulang). Ini hasil deteksi berbasis aturan yang dapat memuat salah
+deteksi; jangan menjadikannya satu-satunya dasar temuan:
 {json.dumps(citation_summary, ensure_ascii=False, indent=1)}
 
 {detail_blocks}
@@ -699,6 +711,7 @@ def build_citation_explanation_prompt(citation_result, reference_texts, mode=MOD
         "referensi_duplikat": matching["referensi_duplikat"][:group_limit],
         "referensi_tidak_lengkap": matching["referensi_tidak_lengkap"][:group_limit],
         "sitasi_sekunder": matching["sitasi_sekunder"][:group_limit],
+        "sitasi_tanpa_tahun": matching.get("sitasi_tanpa_tahun", [])[:group_limit],
     }
     if mode == MODE_RINGKAS:
         mode_rules = (
@@ -722,8 +735,11 @@ def build_citation_explanation_prompt(citation_result, reference_texts, mode=MOD
 Tugas: jelaskan temuan pencocokan sitasi-daftar pustaka dan periksa format APA 7.
 
 PENTING: pasangan sitasi-referensi SUDAH ditentukan secara deterministik oleh
-kode Python di bawah. JANGAN mengubah, menambah, atau menghapus pasangan.
-Tugas Anda hanya:
+kode Python di bawah. JANGAN mengubah statistik atau pasangan. Namun, bila Anda
+melihat indikasi kuat salah deteksi (mis. nama di "sitasi_tanpa_referensi"
+ternyata penulis kedua/ketiga dari entri yang ada di daftar pustaka), JANGAN
+diam: laporkan di "kemungkinan_salah_deteksi" beserta alasannya.
+Tugas Anda:
 1. Menjelaskan setiap kelompok masalah secara akademik.
 2. Memeriksa kepatuhan format APA 7 pada entri daftar pustaka yang diberikan;
    tampilkan entri asli dan contoh perbaikan HANYA berdasar data bibliografi yang ada.
@@ -740,6 +756,7 @@ Format JSON wajib:
   "penjelasan_masalah": [{{"kelompok": "sitasi tanpa referensi/dll", "penjelasan": "...", "dampak": "...", "cara_memperbaiki": "..."}}],
   "evaluasi_kepatuhan_apa_7": [{{"referensi_asli": "...", "masalah_format": "...", "contoh_format_apa_7": "..."}}],
   "daftar_perbaikan_yang_direkomendasikan": ["..."],
+  "kemungkinan_salah_deteksi": [{{"item": "...", "alasan": "..."}}],
   "skor_kualitas_referensi": 0,
   "tingkat_kesiapan_referensi_untuk_publikasi": "Kurang Layak/Cukup/Baik/Sangat Baik/Siap Publikasi"
 }}
