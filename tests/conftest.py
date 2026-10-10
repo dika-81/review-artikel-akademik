@@ -15,7 +15,6 @@ os.environ["FLASK_SECRET_KEY"] = "test-secret-key"
 os.environ["API_KEY_ENCRYPTION_KEY"] = Fernet.generate_key().decode("ascii")
 os.environ.pop("OPENAI_API_KEY", None)
 os.environ.pop("DATABASE_URL", None)
-os.environ.pop("RENDER", None)
 
 import app as app_module  # noqa: E402  (env harus diset sebelum import)
 

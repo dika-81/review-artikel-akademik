@@ -1,15 +1,17 @@
 # Reviu Artikel Ilmiah AI
 
 Aplikasi web Flask untuk menganalisis dan merevisi artikel ilmiah `.docx`
-dengan OpenAI Responses API. Arsitekturnya BYOK murni: setiap pengguna memakai
+dengan OpenAI Responses API. Aplikasi ini ditujukan untuk dijalankan secara
+lokal di Windows dan, bila perlu diakses orang lain, dipublikasikan sementara
+melalui tunnel ngrok. Arsitekturnya BYOK murni: setiap pengguna memakai
 API key OpenAI miliknya sendiri dan menanggung biaya pada akun masing-masing.
 Key dienkripsi di backend, dikaitkan dengan `user_id`, dan tetap tersedia setelah
 logout/login ulang sampai pengguna mengganti atau menghapusnya.
 
 ## Fitur utama
 
-- Registrasi/login dengan akun PostgreSQL persisten di production, password
-  ter-hash, proteksi CSRF, cookie aman, dan `Cache-Control: no-store`.
+- Registrasi/login dengan akun persisten, password ter-hash, proteksi CSRF,
+  cookie aman, dan `Cache-Control: no-store`.
 - Isolasi file unggahan, hasil JSON, PDF, session, dan ciphertext API key per
   pengguna. Tidak ada API key administrator atau fallback key bersama.
 - Ekstraksi DOCX terstruktur menjadi bagian, paragraf, kalimat, dan tabel dengan
@@ -71,7 +73,7 @@ keselarasan antarbagiannya dengan bukti ber-ID dari kedua sisi.
 ├── citations.py
 ├── prompts.py
 ├── requirements.txt
-├── render.yaml
+├── jalankan.bat
 ├── .env.example
 ├── migrations/
 │   └── 001_auth_session_and_encrypted_api_keys.sql
@@ -91,59 +93,91 @@ keselarasan antarbagiannya dengan bukti ber-ID dari kedua sisi.
     ├── test_structure.py
     ├── test_citations.py
     ├── test_adaptive.py
+    ├── test_modes.py
     └── test_analysis_flow.py
 ```
 
 Direktori `instance/`, `flask_session/`, `uploads/`, dan `output/` dibuat saat
 aplikasi berjalan dan tidak boleh di-commit.
 
-## Menjalankan secara lokal
+## Versi Python
 
-1. Buat dan aktifkan virtual environment.
+Gunakan **Python 3.12** melalui virtual environment. Jangan memakai Python 3.14
+apabila ada dependensi yang belum kompatibel dengannya; versi paket pada
+`requirements.txt` saat ini sudah teruji berjalan, tetapi 3.12 tetap menjadi
+versi yang direkomendasikan dan paling aman. Unduh Python 3.12 dari
+python.org bila belum terpasang.
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+## Menjalankan secara lokal (Windows)
+
+Semua perintah di bawah dijalankan di Command Prompt (CMD) dari folder proyek.
+
+1. Buat virtual environment `.venv` (sekali saja):
+
+```bat
+py -3.12 -m venv .venv
 ```
 
-2. Instal dependensi.
+Jika launcher `py` tidak mengenali 3.12, pakai `python -m venv .venv`
+(pastikan `python --version` bukan versi yang bermasalah dengan dependensi).
 
-```powershell
+2. Aktifkan `.venv`:
+
+```bat
+.venv\Scripts\activate
+```
+
+(Di PowerShell gunakan `.\.venv\Scripts\Activate.ps1`.)
+
+3. Instal seluruh dependensi:
+
+```bat
 pip install -r requirements.txt
 ```
 
-3. Salin `.env.example` menjadi `.env`, lalu ganti `FLASK_SECRET_KEY`. Untuk
-   menguji data API key yang bertahan antar-restart lokal, buat juga
-   `API_KEY_ENCRYPTION_KEY`.
+4. Salin `.env.example` menjadi `.env`, lalu ganti `FLASK_SECRET_KEY` dengan
+   nilai acak. Untuk menjaga API key pengguna tetap terbaca antar-restart,
+   buat juga `API_KEY_ENCRYPTION_KEY`:
 
-```powershell
-Copy-Item .env.example .env
-```
-
-File `.env` diabaikan Git. Jangan pernah menaruh nilai rahasia di file yang
-di-commit atau menyalinnya ke issue/log.
-
-Fernet key dapat dibuat secara lokal dengan:
-
-```powershell
+```bat
+copy .env.example .env
+python -c "import secrets; print(secrets.token_hex(32))"
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Salin hasilnya hanya ke `.env` lokal yang tidak dilacak atau secret manager host.
+File `.env` diabaikan Git. Jangan menaruh nilai rahasia di file yang di-commit.
 
-4. Inisialisasi database lokal satu kali, lalu jalankan aplikasi.
+5. Jalankan aplikasi:
 
-```powershell
-flask --app app init-db
+```bat
 python app.py
 ```
 
-Buka `http://127.0.0.1:5000`, buat akun, login, lalu masukkan API key OpenAI.
+Aplikasi otomatis membuat tabel database SQLite yang belum ada, lalu melayani
+di `http://127.0.0.1:5000` (host `127.0.0.1`, port `5000`, debug nonaktif).
+Buka alamat tersebut, buat akun, login, lalu masukkan API key OpenAI.
+
+## Publikasi sementara dengan ngrok
+
+1. Biarkan `python app.py` tetap berjalan di CMD pertama.
+2. Buka **CMD kedua**, lalu jalankan:
+
+```bat
+ngrok http 5000
+```
+
+3. Bagikan URL `https://....ngrok-free.app` yang ditampilkan ngrok. URL ini
+   berubah setiap ngrok dimulai ulang (kecuali memakai domain ngrok berbayar).
+4. Tutup jendela ngrok untuk menghentikan publikasi.
+
+Alternatif: jalankan `jalankan.bat` untuk membuka kedua jendela (Flask dan
+ngrok) sekaligus. Skrip ini memakai Python dari `.venv` sehingga tidak
+bergantung pada Python sistem.
 
 ## Menjalankan test
 
-```powershell
-python -m pytest tests\ -q
+```bat
+python -m pytest tests -q
 ```
 
 Pemanggilan OpenAI dalam test di-mock sehingga tidak memakai saldo API.
@@ -152,65 +186,36 @@ Pemanggilan OpenAI dalam test di-mock sehingga tidak memakai saldo API.
 
 | Variabel | Wajib | Keterangan |
 | --- | --- | --- |
-| `FLASK_SECRET_KEY` | Ya di production | Rahasia. Kunci tetap untuk session dan CSRF; gunakan nilai acak panjang dan jangan diganti setiap deploy. `SECRET_KEY` didukung sebagai alias kompatibilitas. |
-| `DATABASE_URL` | Ya di production | Rahasia karena berisi kredensial. Dapat menunjuk ke Render, Supabase, atau PostgreSQL eksternal lain. Awalan lama `postgres://` dinormalisasi otomatis. |
-| `API_KEY_ENCRYPTION_KEY` | Ya di production | Rahasia Fernet untuk mengenkripsi/dekripsi key pengguna. Jangan ganti tanpa prosedur rotasi/re-enkripsi data. |
-| `FLASK_ENV` | Ya di Render | Set `production`; jika tidak diatur, aplikasi menganggap development lokal. |
-| `FLASK_DEBUG` | Tidak | Default `0`. Jangan aktifkan di production karena debugger interaktif dapat mengekspos data request. |
-| `SESSION_TYPE` | Ya di production | Gunakan `sqlalchemy` agar session tersimpan di PostgreSQL; `cachelib` hanya untuk lokal. |
+| `FLASK_SECRET_KEY` | Disarankan | Kunci tetap untuk session dan CSRF; gunakan nilai acak panjang. `SECRET_KEY` didukung sebagai alias kompatibilitas. |
+| `API_KEY_ENCRYPTION_KEY` | Disarankan | Kunci Fernet untuk mengenkripsi/dekripsi API key pengguna. Tanpa nilai ini, kunci dev diturunkan dari `FLASK_SECRET_KEY`. Jangan ganti tanpa re-enkripsi data. |
+| `FLASK_ENV` | Tidak | Biarkan `development` untuk lokal/ngrok. |
+| `SESSION_TYPE` | Tidak | Default lokal `cachelib` (file di `flask_session/`). |
 | `SESSION_LIFETIME_MINUTES` | Tidak | Umur session, default 120 menit. |
 | `OPENAI_MODEL` | Tidak | Model OpenAI, default `gpt-5.6`. |
 | `OPENAI_TIMEOUT_SECONDS` | Tidak | Timeout request OpenAI, default 300 detik. |
 | `OPENAI_MAX_OUTPUT_TOKENS` | Tidak | Batas keluaran tiap request analisis, default 16000. |
 | `SECTION_CHUNK_CHARS` | Tidak | Target maksimum karakter per batch paragraf, default 20000. |
 | `SCHOLARLY_API_EMAIL` | Tidak | Email kontak untuk Crossref/OpenAlex. |
-| `DATABASE_PATH` | Lokal saja | Lokasi SQLite development/test, default `instance/app.db`. Di production nilai ini tidak dipakai. |
+| `DATABASE_PATH` | Tidak | Lokasi SQLite, default `instance/app.db`. |
+| `HOST` / `PORT` | Tidak | Alamat bind `python app.py`, default `127.0.0.1:5000`. |
 
 Aplikasi sengaja tidak membaca atau membutuhkan `OPENAI_API_KEY` administrator.
 Setiap panggilan OpenAI mendekripsi key milik `current_user.id` di backend tepat
 sebelum membuat client OpenAI.
 
-## Deployment
-
-`render.yaml` dapat dipakai sebagai Blueprint Render. Konfigurasi pokok:
-
-- build command: `pip install -r requirements.txt && flask --app app init-db`;
-- start command: `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 360 app:app`;
-- health check: `/healthz`;
-- branch: `main`;
-- `DATABASE_URL` dan `API_KEY_ENCRYPTION_KEY` diisi manual sebagai secret;
-- session production memakai tabel PostgreSQL (`SESSION_TYPE=sqlalchemy`);
-- secret `FLASK_SECRET_KEY` dibuat sekali oleh Blueprint;
-- tidak ada resource database yang diikat oleh Blueprint, sehingga
-  `DATABASE_URL` dapat memakai PostgreSQL eksternal seperti Supabase;
-- setiap build menjalankan `flask --app app init-db` setelah dependency terpasang;
-  perintah ini aman dijalankan ulang dan hanya membuat tabel yang belum ada.
-
 ## Inisialisasi/migrasi database
 
-Build Render otomatis menjalankan perintah berikut dengan kredensial database
-yang disimpan di environment:
+`python app.py` sudah otomatis membuat tabel yang belum ada di SQLite lokal
+(`instance/app.db`). Inisialisasi manual tetap tersedia bila diperlukan:
 
-```powershell
-pip install -r requirements.txt && flask --app app init-db
+```bat
+flask --app app init-db
 ```
 
-Untuk inisialisasi/migrasi manual, jalankan `flask --app app init-db` atau
-[`migrations/001_auth_session_and_encrypted_api_keys.sql`](migrations/001_auth_session_and_encrypted_api_keys.sql)
-melalui SQL editor/`psql` milik penyedia PostgreSQL.
-
-Keduanya idempoten dan hanya memakai `CREATE ... IF NOT EXISTS`; tidak ada
-`DROP`, `TRUNCATE`, reset, atau delete massal. Migrasi membuat tabel `users`,
-`sessions`, dan `user_api_keys`. Build command tidak mencetak environment
-variable atau nilai secret.
-
-Filesystem Render bersifat ephemeral. Karena itu akun dan session berada di
-PostgreSQL, bukan SQLite atau `flask_session/`. File unggahan, hasil JSON, dan
-PDF saat ini masih berada di filesystem lokal sehingga tetap dapat hilang
-ketika Free Web Service tidur, restart, atau redeploy; gunakan object storage
-jika artefak tersebut juga harus permanen. Jangan mengandalkan Render Free
-PostgreSQL untuk data permanen karena database tersebut kedaluwarsa; gunakan
-PostgreSQL eksternal/berbayar dan backup terjadwal untuk penggunaan sungguhan.
+Perintah ini idempoten dan hanya memakai `CREATE ... IF NOT EXISTS`; tidak ada
+`DROP`, `TRUNCATE`, reset, atau delete massal. Skema yang sama juga
+terdokumentasi di
+[`migrations/001_auth_session_and_encrypted_api_keys.sql`](migrations/001_auth_session_and_encrypted_api_keys.sql).
 
 ## Catatan kualitas dan keamanan
 
@@ -227,3 +232,6 @@ PostgreSQL eksternal/berbayar dan backup terjadwal untuk penggunaan sungguhan.
 - Halaman akun hanya menampilkan status tersimpan dan empat karakter terakhir.
 - Kehilangan atau mengganti `API_KEY_ENCRYPTION_KEY` tanpa re-enkripsi membuat
   ciphertext lama tidak dapat dipakai.
+- URL ngrok bersifat publik selama tunnel aktif: siapa pun yang mengetahui URL
+  dapat membuka halaman login. Bagikan URL hanya kepada pengguna yang dituju
+  dan matikan tunnel setelah selesai.

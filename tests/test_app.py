@@ -634,32 +634,12 @@ def test_api_key_encryption_key_is_required_and_valid_in_production(monkeypatch)
         app_module.get_api_key_encryption_key("secret")
 
 
-def test_deployment_config_is_byok_database_agnostic_and_initializes_schema():
+def test_app_is_byok_without_admin_api_key():
     app_source = (Path(app_module.BASE_DIR) / "app.py").read_text(
-        encoding="utf-8"
-    )
-    render_config = (Path(app_module.BASE_DIR) / "render.yaml").read_text(
         encoding="utf-8"
     )
     assert "OPENAI_API_KEY" not in app_source
     assert "API_KEY_SESSION_FIELD" not in app_source
-    assert "OPENAI_API_KEY" not in render_config
-    assert "API_KEY_ENCRYPTION_KEY" in render_config
-    assert "fromDatabase" not in render_config
-    assert "\ndatabases:" not in render_config
-    build_command = next(
-        line.strip()
-        for line in render_config.splitlines()
-        if line.strip().startswith("buildCommand:")
-    )
-    assert build_command == (
-        "buildCommand: pip install -r requirements.txt "
-        "&& flask --app app init-db"
-    )
-    lowered_build_command = build_command.lower()
-    assert "printenv" not in lowered_build_command
-    assert "env |" not in lowered_build_command
-    assert "echo $" not in lowered_build_command
 
 
 def test_manual_migration_is_non_destructive():
@@ -783,7 +763,6 @@ def test_secret_key_stays_same_across_process_restarts(tmp_path):
     )
     child_env.pop("OPENAI_API_KEY", None)
     child_env.pop("DATABASE_URL", None)
-    child_env.pop("RENDER", None)
     command = [
         sys.executable,
         "-c",

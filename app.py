@@ -54,7 +54,6 @@ from reportlab.platypus import (
 )
 from xml.sax.saxutils import escape
 from sqlalchemy.exc import IntegrityError
-from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -100,8 +99,7 @@ ALLOWED_EXTENSIONS = {".docx"}
 load_dotenv()
 
 ENVIRONMENT = os.getenv("FLASK_ENV", "development").strip().lower()
-IS_RENDER = bool(os.getenv("RENDER"))
-IS_PRODUCTION = IS_RENDER or ENVIRONMENT == "production"
+IS_PRODUCTION = ENVIRONMENT == "production"
 
 # Jangan izinkan log debug HTTP/SDK mencatat detail request atau Authorization.
 for noisy_logger in ("openai", "httpx", "httpcore"):
@@ -302,10 +300,6 @@ login_manager = LoginManager(app)
 login_manager.login_view = "login"
 login_manager.login_message = "Silakan login terlebih dahulu."
 
-if IS_RENDER:
-    # Render terminates HTTPS at one trusted reverse proxy before Gunicorn.
-    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
-
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 INSTANCE_DIR.mkdir(exist_ok=True)
@@ -464,7 +458,7 @@ def delete_current_user_api_key():
 
 
 def get_model_name():
-    return os.getenv("OPENAI_MODEL", "gpt-5.6")
+    return os.getenv("OPENAI_MODEL", "gpt-6-astra")
 
 
 def get_max_output_tokens():
@@ -2508,12 +2502,11 @@ def add_recommended_reference():
 
 
 if __name__ == "__main__":
+    # Jalankan lokal: siapkan tabel database yang belum ada (idempoten),
+    # lalu layani di 127.0.0.1:5000 untuk dipublikasikan lewat `ngrok http 5000`.
+    init_db()
     app.run(
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "5000")),
-        debug=(
-            not IS_PRODUCTION
-            and os.getenv("FLASK_DEBUG", "0").strip().lower()
-            in {"1", "true", "yes"}
-        ),
+        debug=False,
     )
