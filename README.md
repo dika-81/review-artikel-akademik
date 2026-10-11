@@ -8,6 +8,32 @@ API key OpenAI miliknya sendiri dan menanggung biaya pada akun masing-masing.
 Key dienkripsi di backend, dikaitkan dengan `user_id`, dan tetap tersedia setelah
 logout/login ulang sampai pengguna mengganti atau menghapusnya.
 
+## Versi online (GitHub Pages)
+
+Versi statis aplikasi ini berjalan sepenuhnya di browser:
+<https://andikaarisetyawan.com/review-artikel-akademik/>
+
+- Tidak ada server, login, atau database. Artikel dan hasil reviu disimpan di
+  browser masing-masing pengguna (IndexedDB) dan dapat diekspor/diimpor sebagai
+  JSON. API key OpenAI disimpan di browser pengguna dan dikirim hanya ke
+  `api.openai.com`.
+- Model default `gpt-6-astra`; dapat diganti di halaman Pengaturan.
+- Logika analisis tidak ditulis ulang: `tools/build_web.py` menyalin modul inti,
+  mengambil fungsi tahap analisis dan PDF dari `app.py`, serta memakai
+  `templates/result.html` yang sama. Semuanya dijalankan dengan
+  [Pyodide](https://pyodide.org) di Web Worker (`web/js/engine-worker.js`).
+- Setiap push ke `main` menjalankan test lalu menerbitkan ulang situs melalui
+  `.github/workflows/pages.yml`.
+
+Mencoba versi web di komputer sendiri:
+
+```bat
+python tools/build_web.py
+python -m http.server 8000 --directory web
+```
+
+lalu buka `http://127.0.0.1:8000`.
+
 ## Fitur utama
 
 - Registrasi/login dengan akun persisten, password ter-hash, proteksi CSRF,
