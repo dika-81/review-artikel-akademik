@@ -16,3 +16,9 @@ flask_session/
 *.db
 *.sqlite3
 .pytest_cache/
+
+# Bahan uji lokal (berisi artikel pihak lain) - jangan di-commit
+patch_reviu/
+
+# Paket Python versi web; dibangun oleh tools/build_web.py
+web/py/
