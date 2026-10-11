@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://cdn.jsdelivr.net https://api.openai.com https://api.crossref.org https://api.openalex.org; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'"
+    >
+    <meta name="referrer" content="no-referrer">
+    <title>Reviu Artikel Ilmiah AI</title>
+    <meta name="description" content="Asisten reviu artikel ilmiah berbasis AI. Berjalan di browser Anda dengan API key OpenAI milik Anda sendiri.">
+    <link rel="stylesheet" href="static/styles.css">
+    <link rel="stylesheet" href="app.css">
+    <script type="module" src="js/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="#/">Reviu Artikel Ilmiah AI</a>
+        <nav class="topnav" aria-label="Navigasi utama">
+          <a href="#/" data-nav="home">Beranda</a>
+          <a href="#/pengaturan" data-nav="settings">Pengaturan</a>
+        </nav>
+        <p class="engine-status" id="engine-status" role="status" aria-live="polite">
+          <span class="engine-dot" aria-hidden="true"></span>
+          <span id="engine-status-text">Memuat mesin…</span>
+        </p>
+      </div>
+    </header>
+
+    <div id="view">
+      <main class="shell">
+        <section class="panel upload-panel">
+          <p class="lead">Memuat aplikasi…</p>
+        </section>
+      </main>
+    </div>
+
+    <div class="busy-overlay" id="busy" hidden>
+      <div class="busy-box panel" role="alertdialog" aria-modal="true" aria-labelledby="busy-title">
+        <div class="spinner" aria-hidden="true"></div>
+        <h2 id="busy-title">Sedang menganalisis…</h2>
+        <p class="lead" id="busy-text">Menyiapkan permintaan…</p>
+        <p class="note">Jangan tutup tab ini sampai proses selesai. Satu tahap bisa memakan waktu beberapa menit.</p>
+        <button type="button" class="secondary-button" id="busy-cancel">Batalkan</button>
+      </div>
+    </div>
+
+    <noscript>
+      <main class="shell">
+        <section class="panel upload-panel">
+          <p class="lead">Aplikasi ini membutuhkan JavaScript.</p>
+        </section>
+      </main>
+    </noscript>
+  </body>
+</html>

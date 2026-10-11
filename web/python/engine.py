@@ -199,6 +199,43 @@ def view_context(result_json):
     return _reply(True, result=result, context=context)
 
 
+_jinja_env = None
+
+
+def _url_for(endpoint, **values):
+    """Pengganti url_for Flask: tautan aksi ditangkap JavaScript (data-act)."""
+    if endpoint == "static":
+        return "static/" + values.get("filename", "")
+    return "#act/" + endpoint
+
+
+def _template_env():
+    global _jinja_env
+    if _jinja_env is None:
+        from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+        _jinja_env = Environment(
+            loader=FileSystemLoader(os.path.join(os.path.dirname(__file__), "templates")),
+            autoescape=select_autoescape(["html"]),
+        )
+        _jinja_env.globals.update(url_for=_url_for, csrf_token=lambda: "")
+    return _jinja_env
+
+
+def render_result(result_json, review_id, messages_json="[]"):
+    """Render templates/result.html (sama dengan versi Flask) menjadi HTML."""
+    result = json.loads(result_json)
+    messages = json.loads(messages_json or "[]")
+    context = core.result_template_context(result.get("_filename", ""), review_id, result)
+    template = _template_env().get_template("result.html")
+    html = template.render(get_flashed_messages=lambda: messages, **context)
+    return _reply(True, html=html, context={
+        "review_complete": context["review_complete"],
+        "workflow_steps": context["workflow_steps"],
+        "pdf_available": core.PDF_AVAILABLE,
+    })
+
+
 def build_pdf(result_json):
     """Kembalikan isi PDF (bytes); melempar RuntimeError bila tidak bisa dibuat."""
     result = json.loads(result_json)

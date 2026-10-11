@@ -22,3 +22,4 @@ patch_reviu/
 
 # Paket Python versi web; dibangun oleh tools/build_web.py
 web/py/
+web/static/

@@ -47,7 +47,7 @@ FAKE_ANALYSIS = {
 @pytest.fixture(scope="module")
 def web(tmp_path_factory):
     out_dir = tmp_path_factory.mktemp("webpy")
-    build_web.build(out_dir)
+    build_web.build(out_dir, wheels=False)
     sys.path.insert(0, str(out_dir))
     for name in ("web_runtime", "app_core", "engine"):
         sys.modules.pop(name, None)
@@ -294,3 +294,17 @@ def test_opaque_browser_error_is_diagnosed(web, models_status, expected):
     assert not reply["ok"]
     assert expected in reply["error"]
     assert transport.calls[-1]["url"].endswith("/v1/models/gpt-6-astra")
+
+
+def test_render_result_uses_flask_template(web, docx_bytes):
+    configure(web, FakeTransport())
+    engine = web["engine"]
+    result = json.loads(engine.start_review(docx_bytes, "artikel.docx", "mendalam"))["result"]
+    result = json.loads(engine.run_stage(docx_bytes, json.dumps(result), "profil_artikel"))["result"]
+    reply = json.loads(engine.render_result(json.dumps(result), "rev-1", json.dumps(["Pesan <b>uji</b>"])))
+    html = reply["html"]
+    assert reply["ok"]
+    assert 'action="#act/analyze_title"' in html
+    assert 'action="#act/set_article_type"' in html
+    assert "Pesan &lt;b&gt;uji&lt;/b&gt;" in html  # pesan di-escape
+    assert reply["context"]["workflow_steps"][0]["complete"] is True

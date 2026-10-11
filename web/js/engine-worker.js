@@ -12,7 +12,9 @@
 
 const PYODIDE_VERSION = "0.29.4";
 const PYODIDE_BASE = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
-const PY_PACKAGES = ["python-docx==1.1.2", "reportlab==4.4.1"];
+// Paket dari distribusi Pyodide; python-docx dan ReportLab dipasang dari
+// wheel yang disertakan di situs (web/py/wheels, lihat tools/build_web.py).
+const PYODIDE_PACKAGES = ["micropip", "lxml", "jinja2", "pillow", "typing-extensions"];
 const PY_DIR = "/home/pyodide/reviu";
 
 importScripts(PYODIDE_BASE + "pyodide.js");
@@ -49,19 +51,21 @@ function syncRequest(method, url, headers, body, timeoutSeconds) {
 async function loadEngine(baseUrl) {
   progress("Memuat Python (Pyodide)… pertama kali bisa memakan waktu beberapa detik.");
   pyodide = await loadPyodide({ indexURL: PYODIDE_BASE });
-  await pyodide.loadPackage(["micropip", "lxml"]);
+  const manifest = await (await fetch(`${baseUrl}py/manifest.json`, { cache: "no-cache" })).json();
+  await pyodide.loadPackage(PYODIDE_PACKAGES);
+
   progress("Memasang pustaka pembaca DOCX dan PDF…");
   const micropip = pyodide.pyimport("micropip");
-  await micropip.install(PY_PACKAGES);
+  await micropip.install(manifest.wheels.map((name) => `${baseUrl}py/wheels/${name}`));
   micropip.destroy();
 
   progress("Memuat mesin reviu…");
-  const manifest = await (await fetch(`${baseUrl}py/manifest.json`, { cache: "no-cache" })).json();
-  pyodide.FS.mkdirTree(PY_DIR);
   for (const name of manifest.files) {
     const response = await fetch(`${baseUrl}py/${name}?v=${manifest.version}`);
     if (!response.ok) throw new Error(`Gagal memuat ${name} (HTTP ${response.status}).`);
-    pyodide.FS.writeFile(`${PY_DIR}/${name}`, await response.text());
+    const path = `${PY_DIR}/${name}`;
+    pyodide.FS.mkdirTree(path.slice(0, path.lastIndexOf("/")));
+    pyodide.FS.writeFile(path, await response.text());
   }
 
   pyodide.registerJsModule("reviu_bridge", { request: syncRequest });
@@ -112,6 +116,8 @@ const COMMANDS = {
   setArticleType: ({ result, choice }) =>
     callJson("set_article_type", JSON.stringify(result), choice),
   viewContext: ({ result }) => callJson("view_context", JSON.stringify(result)),
+  renderResult: ({ result, reviewId, messages = [] }) =>
+    callJson("render_result", JSON.stringify(result), reviewId, JSON.stringify(messages)),
   buildPdf: ({ result }) => {
     const pdf = engine.build_pdf(JSON.stringify(result));
     try {

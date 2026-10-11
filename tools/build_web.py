@@ -9,13 +9,19 @@ Hasil ditulis ke web/py/ (tidak di-commit; dibangun ulang oleh GitHub Actions):
 - app_core.py: fungsi dan konstanta analisis yang diambil otomatis dari app.py
   dengan AST, sehingga logika tahap analisis hanya ditulis sekali (di app.py);
 - web_runtime.py dan engine.py dari web/python/;
+- templates/result.html (dirender Jinja2 di browser, sama seperti Flask);
+- wheels/: python-docx dan ReportLab (wheel Python murni) agar situs tidak
+  bergantung pada PyPI saat dibuka;
 - manifest.json berisi daftar file untuk dimuat worker Pyodide.
+
+Selain itu static/styles.css disalin ke web/static/styles.css.
 """
 
 import ast
 import hashlib
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -23,6 +29,12 @@ ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
 OUT_DIR = WEB_DIR / "py"
 WEB_PYTHON_DIR = WEB_DIR / "python"
+WEB_STATIC_DIR = WEB_DIR / "static"
+
+# Versi sama dengan requirements.txt. Dependensinya (lxml, Pillow,
+# typing-extensions) tersedia di distribusi Pyodide.
+WHEELS = ["python-docx==1.1.2", "reportlab==4.4.1"]
+TEMPLATES = ["result.html"]
 
 SHARED_MODULES = [
     "analysis_schema.py",
@@ -92,6 +104,7 @@ APP_CORE_NAMES = [
     "get_workflow_steps",
     "module_is_unlocked",
     "is_review_complete",
+    "result_template_context",
     # PDF
     "pdf_safe_text",
     "add_pdf_value",
@@ -203,7 +216,17 @@ def build_app_core():
     return body
 
 
-def build(out_dir=OUT_DIR):
+def download_wheels(target):
+    target.mkdir(parents=True)
+    subprocess.run(
+        [sys.executable, "-m", "pip", "download", "--quiet", "--no-deps",
+         "--only-binary", ":all:", "--dest", str(target), *WHEELS],
+        check=True,
+    )
+    return sorted(path.name for path in target.glob("*.whl"))
+
+
+def build(out_dir=OUT_DIR, wheels=True):
     out_dir = Path(out_dir)
     if out_dir.exists():
         shutil.rmtree(out_dir)
@@ -218,17 +241,28 @@ def build(out_dir=OUT_DIR):
         files.append(path.name)
     (out_dir / "app_core.py").write_text(build_app_core(), encoding="utf-8")
     files.append("app_core.py")
+    (out_dir / "templates").mkdir()
+    for name in TEMPLATES:
+        shutil.copyfile(ROOT / "templates" / name, out_dir / "templates" / name)
+        files.append(f"templates/{name}")
 
     digest = hashlib.sha256()
     for name in sorted(files):
         digest.update(name.encode())
         digest.update((out_dir / name).read_bytes())
-    manifest = {"files": sorted(files), "version": digest.hexdigest()[:12]}
+    wheel_names = download_wheels(out_dir / "wheels") if wheels else []
+    manifest = {
+        "files": sorted(files),
+        "wheels": wheel_names,
+        "version": digest.hexdigest()[:12],
+    }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
 
 def main():
+    WEB_STATIC_DIR.mkdir(exist_ok=True)
+    shutil.copyfile(ROOT / "static" / "styles.css", WEB_STATIC_DIR / "styles.css")
     manifest = build()
     print(f"Paket web/py/ dibuat: {len(manifest['files'])} file, versi {manifest['version']}.")
 
